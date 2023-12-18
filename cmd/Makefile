@@ -8,19 +8,28 @@
 # after inialsing the moudule, you can simply:
 # CGO_CFLAGS=-I/path/to/libbpf CGO_LDFLAGS=-L/path/to/libbpf go build
 
-LIBBPF := /usr/local/lib/libbpf/src/
+BPFVER ?= v0.6.1
+LIBBPF ?= $(PWD)/libbpf/src
 
 export CGO_CFLAGS  = -I$(LIBBPF)
 export CGO_LDFLAGS = -L$(LIBBPF)
 
-build:
-	go build -race -o main cmd/main.go
+default: libbpf/src/libbpf.a balancer
+
+balancer:
+	go build -race -o balancer
 
 config.json: config.pl config.yaml
 	./config.pl config.yaml >$@- && mv $@- $@
 
-wc:
-	wc *.go mon/*.go
-
 clean:
-	rm -f config.json
+	rm -f balancer config.json
+
+distclean: clean
+	rm -rf libbpf
+
+libbpf:
+	git clone -b $(BPFVER) https://github.com/libbpf/libbpf
+
+libbpf/src/libbpf.a: libbpf
+	cd libbpf/src && $(MAKE)
