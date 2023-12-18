@@ -17,7 +17,11 @@ export CGO_LDFLAGS = -L$(LIBBPF)
 default: libbpf/src/libbpf.a balancer
 
 balancer:
-	go build -race -o balancer
+	go build -race -o $@
+
+
+config.yaml:
+	cp config.sample.yaml $@
 
 config.json: config.pl config.yaml
 	./config.pl config.yaml >$@- && mv $@- $@
