@@ -24,7 +24,7 @@ import (
 	"github.com/davidcoles/vc5ng"
 	"github.com/davidcoles/vc5ng/balancer"
 	"github.com/davidcoles/vc5ng/bgp"
-	"github.com/davidcoles/vc5ng/config"
+	//"github.com/davidcoles/vc5ng/config"
 	"github.com/davidcoles/vc5ng/mon"
 )
 
@@ -61,7 +61,8 @@ func main() {
 		log.Fatal("Address is not IPv4: ", addr)
 	}
 
-	conf, err := config.Load(file)
+	//conf, err := config.Load(file)
+	conf, err := Load(file)
 
 	if err != nil {
 		log.Fatal(err)
@@ -102,7 +103,8 @@ func main() {
 		},
 	}
 
-	director.Start(addr, conf.Services)
+	//director.Start(addr, vc5ng.Parse(conf.Services))
+	director.Start(addr, Parse(conf.Services))
 	defer func() {
 		director.Stop()
 		time.Sleep(time.Second)
@@ -188,10 +190,11 @@ func signals(director *vc5ng.Director, client *xvs.Client, file string, done cha
 			fmt.Println("CLOSING")
 			close(done)
 		case syscall.SIGINT:
-			conf, err := config.Load(file)
+			//conf, err := config.Load(file)
+			conf, err := Load(file)
 			if err == nil {
 				client.UpdateVLANs(conf.VLANs())
-				director.Configure(conf.Services)
+				director.Configure(Parse(conf.Services))
 			} else {
 				log.Println(err)
 			}
@@ -360,4 +363,35 @@ func unix(socket string) *http.Client {
 			},
 		},
 	}
+}
+
+func Parse(cfg map[ipp]Service) map[vc5ng.Tuple]vc5ng.Service {
+	services := map[vc5ng.Tuple]vc5ng.Service{}
+
+	for ipp, svc := range cfg {
+
+		service := vc5ng.Service{
+			Address:      ipp.Addr,
+			Port:         ipp.Port,
+			Protocol:     ipp.Protocol,
+			Destinations: map[vc5ng.IPPort]vc5ng.Destination{},
+			Required:     svc.Need,
+			Sticky:       svc.Sticky,
+		}
+
+		for ap, dst := range svc.Destinations {
+
+			destination := vc5ng.Destination{
+				Weight:   dst.Weight,
+				Disabled: dst.Disabled,
+				Checks:   append([]mon.Check{}, dst.Checks...),
+			}
+
+			service.Destinations[vc5ng.IPPort{Addr: ap.Addr, Port: ap.Port}] = destination
+		}
+
+		services[vc5ng.Tuple{Addr: ipp.Addr, Port: ipp.Port, Protocol: ipp.Protocol}] = service
+	}
+
+	return services
 }

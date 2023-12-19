@@ -76,7 +76,9 @@ type Instance struct {
 
 type Services map[Instance]Checks
 
-type Foo struct {
+// type Foo struct {
+type Foo = Target
+type Target struct {
 	Init   bool
 	Checks Checks
 }

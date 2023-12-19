@@ -9,6 +9,7 @@
 # CGO_CFLAGS=-I/path/to/libbpf CGO_LDFLAGS=-L/path/to/libbpf go build
 
 BPFVER ?= v0.6.1
+#BPFVER ?= v0.8.1
 LIBBPF ?= $(PWD)/libbpf/src
 
 export CGO_CFLAGS  = -I$(LIBBPF)
