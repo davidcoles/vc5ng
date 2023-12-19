@@ -32,19 +32,17 @@ import (
 var client *http.Client
 
 func init() {
-	transport := &http.Transport{
-		Dial: (&net.Dialer{
-			Timeout: 2 * time.Second,
-		}).Dial,
-		TLSHandshakeTimeout: 1 * time.Second,
-		TLSClientConfig:     &tls.Config{InsecureSkipVerify: true},
-	}
-
 	client = &http.Client{
-		Timeout:   time.Second * 3,
-		Transport: transport,
+		Timeout: time.Second * 3,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
+		},
+		Transport: &http.Transport{
+			Dial: (&net.Dialer{
+				Timeout: 2 * time.Second,
+			}).Dial,
+			TLSHandshakeTimeout: 1 * time.Second,
+			TLSClientConfig:     &tls.Config{InsecureSkipVerify: true},
 		},
 	}
 }

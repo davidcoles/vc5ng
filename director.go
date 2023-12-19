@@ -7,7 +7,7 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/davidcoles/vc5ng/config"
+	//"github.com/davidcoles/vc5ng/config"
 	"github.com/davidcoles/vc5ng/mon"
 )
 
@@ -49,8 +49,18 @@ func DestinationKey(addr netip.Addr, port uint16) IPPort {
 	return IPPort{Addr: addr, Port: port}
 }
 
-type Tuple = config.IPPortProtocol
-type IPPort = config.IPPort
+type IPPortProtocol struct {
+	Addr     netip.Addr
+	Port     uint16
+	Protocol uint8
+}
+
+type IPPort struct {
+	Addr netip.Addr
+	Port uint16
+}
+
+type Tuple = IPPortProtocol
 type Check = mon.Check
 type Target = map[Tuple]Service
 
@@ -354,6 +364,7 @@ func clone(in []Service) (out []Service) {
 	return out
 }
 
+/*
 func Parse(cfg map[Tuple]config.Service) map[Tuple]Service {
 	services := map[Tuple]Service{}
 
@@ -384,6 +395,7 @@ func Parse(cfg map[Tuple]config.Service) map[Tuple]Service {
 
 	return services
 }
+*/
 
 func (d *Director) services() map[Tuple]Service {
 	services := map[Tuple]Service{}
