@@ -24,7 +24,6 @@ import (
 	"github.com/davidcoles/vc5ng"
 	"github.com/davidcoles/vc5ng/balancer"
 	"github.com/davidcoles/vc5ng/bgp"
-	//"github.com/davidcoles/vc5ng/config"
 	"github.com/davidcoles/vc5ng/mon"
 )
 
@@ -105,17 +104,15 @@ func main() {
 
 	//director.Start(addr, vc5ng.Parse(conf.Services))
 	director.Start(addr, Parse(conf.Services))
-	defer func() {
-		director.Stop()
-		time.Sleep(time.Second)
-	}()
 
 	done := make(chan bool)
 	go signals(director, client, file, done)
 
+	rib := director.RIBv4()
+
 	go func() { // advertise VIPs via BGP
 		for _ = range director.C {
-			rib := director.RIBv4()
+			rib = director.RIBv4()
 			fmt.Println("RIB:", rib)
 			pool.RIB(rib)
 		}
@@ -141,6 +138,27 @@ func main() {
 		w.Write([]byte("\n"))
 	})
 
+	http.HandleFunc("/stats", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		var ribs []netip.Addr
+
+		for _, r := range rib {
+			ribs = append(ribs, netip.AddrFrom4(r))
+		}
+
+		stats := &status_{
+			Info:     client.Info(),
+			Services: stats(conf, director, client),
+			BGP:      pool.Status(),
+			RIB:      ribs,
+		}
+
+		js, _ := json.MarshalIndent(&stats, " ", " ")
+		w.Write(js)
+		w.Write([]byte("\n"))
+	})
+
 	http.HandleFunc("/prefixes", func(w http.ResponseWriter, r *http.Request) {
 		t := time.Now()
 		p := client.Prefixes()
@@ -161,20 +179,21 @@ func main() {
 	}()
 
 	<-done
+	director.Stop()
 }
 
-type Status struct {
+type _Status struct {
 	Service      xvs.ServiceExtended
 	Destinations []xvs.DestinationExtended
 }
 
-func status(client *xvs.Client) (status []Status) {
+func status(client *xvs.Client) (status []_Status) {
 
 	svcs, _ := client.Services()
 
 	for _, se := range svcs {
 		dsts, _ := client.Destinations(se.Service)
-		status = append(status, Status{Service: se, Destinations: dsts})
+		status = append(status, _Status{Service: se, Destinations: dsts})
 	}
 
 	return
@@ -363,4 +382,138 @@ func unix(socket string) *http.Client {
 			},
 		},
 	}
+}
+
+type Serv struct {
+	Name        string
+	Description string
+	Port        uint16
+	Protocol    uint8
+
+	Required  uint8
+	Available uint8
+
+	Stats Stats
+
+	Destinations []Dest
+}
+
+type Dest struct {
+	Address string
+	Port    uint16
+
+	Stats Stats
+
+	Weight uint8
+
+	Disabled   bool
+	Up         bool
+	When       uint64
+	Last       uint64
+	Duration   uint64
+	Diagnostic string
+	MAC        string
+}
+
+type tuple = IPPortProtocol
+
+type Key struct {
+	VIP      netip.Addr
+	RIP      netip.Addr
+	Port     uint16
+	Protocol uint8
+}
+
+type Stats struct {
+	Octets  uint64
+	Packets uint64
+	Flows   uint64
+	Current uint64
+
+	OctetsPerSecond  uint64
+	PacketsPerSecond uint64
+	FlowsPerSecond   uint64
+}
+
+func (s *Stats) xvs(x xvs.Stats) {
+	s.Octets = x.Octets
+	s.Packets = x.Packets
+	s.Flows = x.Flows
+	//s.Current = x.Current
+}
+
+type status_ struct {
+	Info     xvs.Info
+	Services map[string][]Serv
+	BGP      map[string]bgp.Status
+	RIB      []netip.Addr
+}
+
+func stats(conf *Config, director *vc5ng.Director, client *xvs.Client) map[string][]Serv {
+
+	new := map[Key]xvs.Stats{}
+
+	ret := map[string][]Serv{}
+
+	services := director.Status()
+
+	for _, svc := range services {
+
+		vip := svc.Address.String()
+
+		list, _ := ret[vip]
+
+		xs := xvs.Service{Address: svc.Address, Port: svc.Port, Protocol: xvs.Protocol(svc.Protocol)}
+		xse, _ := client.Service(xs)
+
+		cnf, _ := conf.Services[tuple{Addr: svc.Address, Port: svc.Port, Protocol: svc.Protocol}]
+
+		serv := Serv{
+			Name:        cnf.Name,
+			Description: cnf.Description,
+			Port:        svc.Port,
+			Protocol:    svc.Protocol,
+			Required:    svc.Required,
+			Available:   svc.Available,
+		}
+
+		serv.Stats.xvs(xse.Stats)
+
+		key := Key{VIP: svc.Address, Port: svc.Port, Protocol: svc.Protocol}
+		new[key] = xse.Stats
+
+		stats := map[netip.Addr]xvs.Stats{}
+		mac := map[netip.Addr]string{}
+
+		xd, _ := client.Destinations(xs)
+		for _, d := range xd {
+			stats[d.Destination.Address] = d.Stats
+			mac[d.Destination.Address] = d.MAC.String()
+		}
+
+		for addr, dst := range svc.Destinations {
+			s, _ := stats[addr.Addr]
+
+			dest := Dest{
+				Address:    addr.Addr.String(),
+				Port:       addr.Port,
+				Disabled:   dst.Disabled,
+				Up:         dst.Healthy,
+				Weight:     dst.Weight,
+				Diagnostic: dst.Diagnostic,
+				MAC:        mac[addr.Addr],
+			}
+
+			dest.Stats.xvs(s)
+
+			key := Key{VIP: svc.Address, RIP: addr.Addr, Port: svc.Port, Protocol: svc.Protocol}
+			new[key] = s
+
+			serv.Destinations = append(serv.Destinations, dest)
+		}
+
+		ret[vip] = append(list, serv)
+	}
+
+	return ret
 }

@@ -7,7 +7,6 @@ import (
 	"sort"
 	"sync"
 
-	//"github.com/davidcoles/vc5ng/config"
 	"github.com/davidcoles/vc5ng/mon"
 )
 
@@ -113,10 +112,9 @@ type Director struct {
 	Balancer Balancer
 	prober   Prober
 	mutex    sync.Mutex
-	//cfg      map[Tuple]config.Service
-	cfg2 map[Tuple]Service
-	mon  *mon.Mon
-	die  chan bool
+	cfg      map[Tuple]Service
+	mon      *mon.Mon
+	die      chan bool
 }
 
 type NilBalancer struct{}
@@ -145,15 +143,6 @@ func (d *Director) Start(ip netip.Addr, cfg map[Tuple]Service) (err error) {
 		return err
 	}
 
-	/*
-		err = d.Configure(cfg)
-
-		if err != nil {
-			d.mon.Update(nil)
-			return err
-		}
-	*/
-
 	err = d.Configure(cfg)
 
 	if err != nil {
@@ -172,89 +161,21 @@ func (d *Director) Stop() {
 	close(d.die)
 }
 
-//func (d *Director) Configure(cfg map[Tuple]config.Service) error {
-//	return d.Configure2(Parse(cfg))
-//}
-
-/*
-func (d *Director) _Configure(cfg map[Tuple]config.Service) error {
+func (d *Director) Configure(cfg map[Tuple]Service) error {
 	d.mutex.Lock()
 	defer d.mutex.Unlock()
 
 	vips := map[netip.Addr]bool{}
 	svcs := map[mon.Service]bool{}
 
-	for s, _ := range d.cfg {
-		vips[s.Addr] = true
-		svcs[mon.Service{Address: s.Addr, Port: s.Port, Protocol: s.Protocol}] = true
-	}
-
-	services := map[mon.Instance]mon.Foo{}
-
-	for ipp, svc := range cfg {
-		if ipp.Port == 0 {
-			return errors.New("Service port cannot be 0")
-		}
-
-		if ipp.Protocol != TCP && ipp.Protocol != UDP {
-			return errors.New("Only TCP and UDP protocols supported")
-		}
-
-		for ip, _ := range svc.Destinations {
-			if ip.Port == 0 {
-				return errors.New("Destination port cannot be 0")
-			}
-		}
-	}
-
-	for ipp, svc := range cfg {
-
-		s := mon.Service{Address: ipp.Addr, Port: ipp.Port, Protocol: ipp.Protocol}
-
-		// When:
-		// 1) adding a new vip, all checks should start as down(false) to prevent routing flaps
-		// 2) adding a new service to an existing vip, start up(true) to prevent vip being withdrawn
-		// 3) adding a new real to an existing service, start as down(false) state to prevent rehash
-
-		init := vips[ipp.Addr] && !svcs[s]
-		// 1: false && ?????? => false
-		// 2: true  && !false => true
-		// 3: true  && !true  => false
-
-		for ip, r := range svc.Destinations {
-			d := mon.Destination{Address: ip.Addr, Port: ip.Port}
-			i := mon.Instance{Service: s, Destination: d}
-			services[i] = mon.Foo{Init: init, Checks: r.Checks}
-		}
-	}
-
-	d.cfg = cfg
-
-	// balancer update should return a bool/error value to inidcate if the config was acceptable
-	// only do d.cfg = cfg if it was
-	d.balancer().Synchronise(d.services())
-	d.mon.Update(services)
-	d.inform()
-
-	return nil
-}
-*/
-
-func (d *Director) Configure(cfg2 map[Tuple]Service) error {
-	d.mutex.Lock()
-	defer d.mutex.Unlock()
-
-	vips := map[netip.Addr]bool{}
-	svcs := map[mon.Service]bool{}
-
-	for s, _ := range cfg2 {
+	for s, _ := range cfg {
 		vips[s.Addr] = true
 		svcs[mon.Service{Address: s.Addr, Port: s.Port, Protocol: s.Protocol}] = true
 	}
 
 	services := map[mon.Instance]mon.Target{}
 
-	for ipp, svc := range cfg2 {
+	for ipp, svc := range cfg {
 		if ipp.Port == 0 {
 			return errors.New("Service port cannot be 0")
 		}
@@ -270,7 +191,7 @@ func (d *Director) Configure(cfg2 map[Tuple]Service) error {
 		}
 	}
 
-	for ipp, svc := range cfg2 {
+	for ipp, svc := range cfg {
 
 		s := mon.Service{Address: ipp.Addr, Port: ipp.Port, Protocol: ipp.Protocol}
 
@@ -291,7 +212,7 @@ func (d *Director) Configure(cfg2 map[Tuple]Service) error {
 		}
 	}
 
-	d.cfg2 = cfg2
+	d.cfg = cfg
 
 	// balancer update should return a bool/error value to inidcate if the config was acceptable
 	// only do d.cfg = cfg if it was
@@ -364,53 +285,18 @@ func clone(in []Service) (out []Service) {
 	return out
 }
 
-/*
-func Parse(cfg map[Tuple]config.Service) map[Tuple]Service {
-	services := map[Tuple]Service{}
-
-	for ipp, svc := range cfg {
-
-		service := Service{
-			Address:      ipp.Addr,
-			Port:         ipp.Port,
-			Protocol:     ipp.Protocol,
-			Destinations: map[IPPort]Destination{},
-			Required:     svc.Need,
-			Sticky:       svc.Sticky,
-		}
-
-		for ap, dst := range svc.Destinations {
-
-			destination := Destination{
-				Weight:   dst.Weight,
-				Disabled: dst.Disabled,
-				Checks:   append([]mon.Check{}, dst.Checks...),
-			}
-
-			service.Destinations[ap] = destination
-		}
-
-		services[ipp] = service
-	}
-
-	return services
-}
-*/
-
 func (d *Director) services() map[Tuple]Service {
 	services := map[Tuple]Service{}
 
-	//for ipp, svc := range d.cfg {
-	for ipp, svc := range d.cfg2 {
+	for ipp, svc := range d.cfg {
 
 		service := Service{
 			Address:      ipp.Addr,
 			Port:         ipp.Port,
 			Protocol:     ipp.Protocol,
 			Destinations: map[IPPort]Destination{},
-			//Required:     svc.Need,
-			Required: svc.Required,
-			Sticky:   svc.Sticky,
+			Required:     svc.Required,
+			Sticky:       svc.Sticky,
 		}
 
 		sv := mon.Service{Address: ipp.Addr, Port: ipp.Port, Protocol: ipp.Protocol}
@@ -479,7 +365,6 @@ func (d *Director) background() {
 	for {
 		select {
 		case <-d.mon.C:
-			//fmt.Println("Something changed:")
 			d.update()
 		case <-d.die:
 			d.Configure(nil)

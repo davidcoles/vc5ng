@@ -74,8 +74,6 @@ type Instance struct {
 
 type Services map[Instance]Checks
 
-// type Foo struct {
-type Foo = Target
 type Target struct {
 	Init   bool
 	Checks Checks
@@ -104,7 +102,7 @@ type Mon struct {
 	prober   Prober
 }
 
-func New(addr netip.Addr, services map[Instance]Foo, p Prober) (*Mon, error) {
+func New(addr netip.Addr, services map[Instance]Target, p Prober) (*Mon, error) {
 
 	m := &Mon{C: make(chan bool, 1), services: make(map[Instance]*state), prober: p}
 
@@ -154,7 +152,7 @@ func (m *Mon) Stop() {
 	m.Update(nil)
 }
 
-func (m *Mon) Update(checks map[Instance]Foo) {
+func (m *Mon) Update(checks map[Instance]Target) {
 
 	for instance, state := range m.services {
 		if new, ok := checks[instance]; ok {
