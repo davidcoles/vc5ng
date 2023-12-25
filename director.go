@@ -335,6 +335,7 @@ func (d *Director) services() map[Tuple]Service {
 func (d *Director) Status() (services []Service) {
 	d.mutex.Lock()
 	defer d.mutex.Unlock()
+
 	for _, s := range d.services() {
 		services = append(services, s)
 	}
@@ -343,7 +344,7 @@ func (d *Director) Status() (services []Service) {
 		return services[i].Compare(services[j]) < 0
 	})
 
-	return
+	return services
 }
 
 func (d *Director) update() {

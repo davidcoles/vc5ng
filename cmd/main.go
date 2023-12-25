@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -26,6 +27,12 @@ import (
 	"github.com/davidcoles/vc5ng/bgp"
 	"github.com/davidcoles/vc5ng/mon"
 )
+
+var mutex sync.Mutex
+var pool *bgp.Pool
+var client *xvs.Client
+var config *Config
+var director *vc5ng.Director
 
 func main() {
 
@@ -60,19 +67,18 @@ func main() {
 		log.Fatal("Address is not IPv4: ", addr)
 	}
 
-	//conf, err := config.Load(file)
-	conf, err := Load(file)
+	config, err = Load(file)
 
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	client := &xvs.Client{
+	client = &xvs.Client{
 		Interfaces: nics,
 		Address:    addr,
 		Redirect:   *redirect,
 		Native:     *native,
-		VLANs:      conf.VLANs(),
+		VLANs:      config.VLANs(),
 		NAT:        true,
 		//Namespace: "vc5",
 	}
@@ -85,7 +91,7 @@ func main() {
 
 	go spawn(client.Namespace(), os.Args[0], "-s", socket.Name(), client.NamespaceAddress())
 
-	pool := bgp.NewPool(addr.As4(), conf.BGP, nil)
+	pool = bgp.NewPool(addr.As4(), config.BGP, nil)
 
 	if pool == nil {
 		log.Fatal("BGP pool fail")
@@ -93,7 +99,7 @@ func main() {
 
 	af_unix := unix(socket.Name())
 
-	director := &vc5ng.Director{
+	director = &vc5ng.Director{
 		Balancer: &balancer.Balancer{
 			Client: client,
 			ProbeFn: func(addr netip.Addr, check mon.Check) (bool, string) {
@@ -102,19 +108,50 @@ func main() {
 		},
 	}
 
-	//director.Start(addr, vc5ng.Parse(conf.Services))
-	director.Start(addr, Parse(conf.Services))
+	director.Start(addr, Parse(config.Services))
 
 	done := make(chan bool)
-	go signals(director, client, file, done)
+	go signals(file, done)
 
 	rib := director.RIBv4()
+	xyz := map[string][]Serv{}
+
+	go func() {
+		old := map[Key]Stats{}
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for {
+			mutex.Lock()
+			xyz, old = serviceStatus(old)
+			mutex.Unlock()
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
 
 	go func() { // advertise VIPs via BGP
-		for _ = range director.C {
-			rib = director.RIBv4()
-			fmt.Println("RIB:", rib)
-			pool.RIB(rib)
+		timer := time.NewTimer(30 * time.Second)
+		var init bool
+		for {
+			select {
+			case _, ok := <-director.C:
+				if !ok {
+					return
+				}
+			case <-timer.C:
+				fmt.Println("STARTS")
+				init = true
+			}
+			if init {
+				mutex.Lock()
+				rib = director.RIBv4()
+				fmt.Println("RIB:", rib)
+				pool.RIB(rib)
+				mutex.Unlock()
+			}
 		}
 	}()
 
@@ -122,9 +159,16 @@ func main() {
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Println(client.Info())
+		w.Header().Set("Content-Type", "text/plain")
+		w.Write([]byte("Hello, World!\n"))
+	})
+
+	http.HandleFunc("/vc5ng", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Println(client.Info())
 		w.Header().Set("Content-Type", "application/json")
 		status := director.Status()
-		js, _ := json.MarshalIndent(&status, " ", " ")
+		js, err := json.MarshalIndent(&status, " ", " ")
+		fmt.Println(err)
 		w.Write(js)
 		w.Write([]byte("\n"))
 	})
@@ -132,8 +176,7 @@ func main() {
 	http.HandleFunc("/xvs", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Println(client.Info())
 		w.Header().Set("Content-Type", "application/json")
-		status := status(client)
-		js, _ := json.MarshalIndent(&status, " ", " ")
+		js, _ := json.MarshalIndent(xvsStatus(client), " ", " ")
 		w.Write(js)
 		w.Write([]byte("\n"))
 	})
@@ -143,18 +186,28 @@ func main() {
 
 		var ribs []netip.Addr
 
+		mutex.Lock()
+
 		for _, r := range rib {
 			ribs = append(ribs, netip.AddrFrom4(r))
 		}
 
-		stats := &status_{
-			Info:     client.Info(),
-			Services: stats(conf, director, client),
-			BGP:      pool.Status(),
-			RIB:      ribs,
+		type status struct {
+			Info     xvs.Info
+			Services map[string][]Serv
+			BGP      map[string]bgp.Status
+			RIB      []netip.Addr
 		}
 
-		js, _ := json.MarshalIndent(&stats, " ", " ")
+		js, _ := json.MarshalIndent(&status{
+			Info:     client.Info(),
+			Services: xyz,
+			BGP:      pool.Status(),
+			RIB:      ribs,
+		}, " ", " ")
+
+		mutex.Unlock()
+
 		w.Write(js)
 		w.Write([]byte("\n"))
 	})
@@ -169,7 +222,7 @@ func main() {
 			}
 		}
 		w.Header().Set("Content-Type", "application/json")
-		js, _ := json.MarshalIndent(&p, " ", " ")
+		js, _ := json.Marshal(&p)
 		w.Write(js)
 		w.Write([]byte("\n"))
 	})
@@ -179,41 +232,46 @@ func main() {
 	}()
 
 	<-done
-	director.Stop()
 }
 
-type _Status struct {
-	Service      xvs.ServiceExtended
-	Destinations []xvs.DestinationExtended
-}
+func xvsStatus(client *xvs.Client) *[]interface{} {
 
-func status(client *xvs.Client) (status []_Status) {
+	type status struct {
+		Service      xvs.ServiceExtended
+		Destinations []xvs.DestinationExtended
+	}
+
+	var ret []interface{}
 
 	svcs, _ := client.Services()
 
 	for _, se := range svcs {
 		dsts, _ := client.Destinations(se.Service)
-		status = append(status, _Status{Service: se, Destinations: dsts})
+		ret = append(ret, status{Service: se, Destinations: dsts})
 	}
 
-	return
+	return &ret
 }
 
-func signals(director *vc5ng.Director, client *xvs.Client, file string, done chan bool) {
+func signals(file string, done chan bool) {
 	sig := make(chan os.Signal)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGQUIT)
 
 	for {
 		switch <-sig {
 		case syscall.SIGQUIT:
-			fmt.Println("CLOSING")
+			director.Stop()
 			close(done)
+			fmt.Println("CLOSING")
 		case syscall.SIGINT:
-			//conf, err := config.Load(file)
 			conf, err := Load(file)
 			if err == nil {
-				client.UpdateVLANs(conf.VLANs())
-				director.Configure(Parse(conf.Services))
+				mutex.Lock()
+				config = conf
+				client.UpdateVLANs(config.VLANs())
+				director.Configure(Parse(config.Services))
+				pool.Configure(config.BGP)
+				mutex.Unlock()
 			} else {
 				log.Println(err)
 			}
@@ -385,27 +443,21 @@ func unix(socket string) *http.Client {
 }
 
 type Serv struct {
-	Name        string
-	Description string
-	Port        uint16
-	Protocol    uint8
-
-	Required  uint8
-	Available uint8
-
-	Stats Stats
-
+	Name         string
+	Description  string
+	Port         uint16
+	Protocol     uint8
+	Required     uint8
+	Available    uint8
+	Stats        Stats
 	Destinations []Dest
 }
 
 type Dest struct {
-	Address string
-	Port    uint16
-
-	Stats Stats
-
-	Weight uint8
-
+	Address    string
+	Port       uint16
+	Stats      Stats
+	Weight     uint8
 	Disabled   bool
 	Up         bool
 	When       uint64
@@ -425,34 +477,39 @@ type Key struct {
 }
 
 type Stats struct {
-	Octets  uint64
-	Packets uint64
-	Flows   uint64
-	Current uint64
-
+	Octets           uint64
+	Packets          uint64
+	Flows            uint64
+	Current          uint64
 	OctetsPerSecond  uint64
 	PacketsPerSecond uint64
 	FlowsPerSecond   uint64
+	time             time.Time
 }
 
-func (s *Stats) xvs(x xvs.Stats) {
+func (s *Stats) xvs(x xvs.Stats, y Stats) Stats {
 	s.Octets = x.Octets
 	s.Packets = x.Packets
 	s.Flows = x.Flows
 	//s.Current = x.Current
+	s.time = time.Now()
+
+	if y.time.Unix() != 0 {
+		diff := uint64(s.time.Sub(y.time) / time.Millisecond)
+
+		if diff != 0 {
+			s.OctetsPerSecond = (1000 * (s.Octets - y.Octets)) / diff
+			s.PacketsPerSecond = (1000 * (s.Packets - y.Packets)) / diff
+			s.FlowsPerSecond = (1000 * (s.Flows - y.Flows)) / diff
+		}
+	}
+
+	return *s
 }
 
-type status_ struct {
-	Info     xvs.Info
-	Services map[string][]Serv
-	BGP      map[string]bgp.Status
-	RIB      []netip.Addr
-}
+func serviceStatus(old map[Key]Stats) (map[string][]Serv, map[Key]Stats) {
 
-func stats(conf *Config, director *vc5ng.Director, client *xvs.Client) map[string][]Serv {
-
-	new := map[Key]xvs.Stats{}
-
+	new := map[Key]Stats{}
 	ret := map[string][]Serv{}
 
 	services := director.Status()
@@ -466,7 +523,7 @@ func stats(conf *Config, director *vc5ng.Director, client *xvs.Client) map[strin
 		xs := xvs.Service{Address: svc.Address, Port: svc.Port, Protocol: xvs.Protocol(svc.Protocol)}
 		xse, _ := client.Service(xs)
 
-		cnf, _ := conf.Services[tuple{Addr: svc.Address, Port: svc.Port, Protocol: svc.Protocol}]
+		cnf, _ := config.Services[tuple{Addr: svc.Address, Port: svc.Port, Protocol: svc.Protocol}]
 
 		serv := Serv{
 			Name:        cnf.Name,
@@ -477,10 +534,8 @@ func stats(conf *Config, director *vc5ng.Director, client *xvs.Client) map[strin
 			Available:   svc.Available,
 		}
 
-		serv.Stats.xvs(xse.Stats)
-
 		key := Key{VIP: svc.Address, Port: svc.Port, Protocol: svc.Protocol}
-		new[key] = xse.Stats
+		new[key] = serv.Stats.xvs(xse.Stats, old[key])
 
 		stats := map[netip.Addr]xvs.Stats{}
 		mac := map[netip.Addr]string{}
@@ -504,10 +559,8 @@ func stats(conf *Config, director *vc5ng.Director, client *xvs.Client) map[strin
 				MAC:        mac[addr.Addr],
 			}
 
-			dest.Stats.xvs(s)
-
 			key := Key{VIP: svc.Address, RIP: addr.Addr, Port: svc.Port, Protocol: svc.Protocol}
-			new[key] = s
+			new[key] = dest.Stats.xvs(s, old[key])
 
 			serv.Destinations = append(serv.Destinations, dest)
 		}
@@ -515,5 +568,5 @@ func stats(conf *Config, director *vc5ng.Director, client *xvs.Client) map[strin
 		ret[vip] = append(list, serv)
 	}
 
-	return ret
+	return ret, new
 }
