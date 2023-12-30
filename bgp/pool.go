@@ -18,6 +18,10 @@
 
 package bgp
 
+import (
+	"net/netip"
+)
+
 type status = map[string]Status
 
 type Pool struct {
@@ -36,8 +40,20 @@ func (p *Pool) Configure(c map[string]Parameters) {
 	p.c <- c
 }
 
-func (p *Pool) RIB(r []IP) {
+func (p *Pool) _RIB(r []IP) {
 	p.r <- r
+}
+
+func (p *Pool) RIB(r []netip.Addr) {
+	var f []IP
+
+	for _, a := range r {
+		if a.Is4() {
+			f = append(f, a.As4())
+		}
+	}
+
+	p.r <- f
 }
 
 func (p *Pool) Close() {

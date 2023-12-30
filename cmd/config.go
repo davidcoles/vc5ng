@@ -43,13 +43,15 @@ type Service struct {
 	//Scheduler types.Scheduler `json:"scheduler"`
 }
 
+type services map[ipp]Service
+
 // Load balancer configuration
 type Config struct {
 	// Two level dictionary of virual IP addresses and Layer 4
 	// protocol/port number of services provided by the balancer
 	//VIPs map[string]map[string]Service `json:"vips,omitempty"`
 
-	Services map[ipp]Service `json:"services,omitempty"`
+	Services services `json:"services,omitempty"`
 
 	// VLAN ID to subnet mappings
 	VLANs_ map[uint16]Prefix `json:"vlans,omitempty"`
@@ -320,7 +322,8 @@ func (p *Prefix) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-func Parse(cfg map[ipp]Service) map[vc5ng.Tuple]vc5ng.Service {
+func (cfg services) parse() map[vc5ng.Tuple]vc5ng.Service {
+
 	services := map[vc5ng.Tuple]vc5ng.Service{}
 
 	for ipp, svc := range cfg {
@@ -349,4 +352,16 @@ func Parse(cfg map[ipp]Service) map[vc5ng.Tuple]vc5ng.Service {
 	}
 
 	return services
+}
+
+type protocol uint8
+
+func (p protocol) MarshalText() ([]byte, error) {
+	switch p {
+	case 6:
+		return []byte("tcp"), nil
+	case 17:
+		return []byte("udp"), nil
+	}
+	return nil, errors.New("Invalid protocol")
 }

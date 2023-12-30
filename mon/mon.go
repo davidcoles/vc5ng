@@ -87,9 +87,10 @@ type state struct {
 
 type status = Status
 type Status struct {
-	OK          bool
-	Diagnostic  string
-	Time        time.Duration
+	OK         bool
+	Diagnostic string
+	//Time        time.Duration
+	Took        time.Duration
 	Last        time.Time
 	When        time.Time
 	Initialised bool
@@ -165,7 +166,7 @@ func (m *Mon) Update(checks map[Instance]Target) {
 	}
 
 	for instance, c := range checks {
-		state := &state{status: status{OK: c.Init, Diagnostic: "Initialising ..."}}
+		state := &state{status: status{OK: c.Init, Diagnostic: "Initialising ...", When: time.Now()}}
 		state.checks = m.monitor(instance.Service.Address, instance.Destination.Address, instance.Destination.Port, state, c.Checks)
 		m.services[instance] = state
 	}
@@ -187,7 +188,10 @@ func (m *Mon) monitor(vip, rip netip.Addr, port uint16, state *state, c Checks) 
 
 	go func() {
 
-		history := [5]bool{true, true, true, true, false}
+		history := [5]bool{false, false, false, false, false}
+		if state.status.OK {
+			history = [5]bool{true, true, true, true, true}
+		}
 
 		ticker := time.NewTicker(2 * time.Second)
 		defer ticker.Stop()
@@ -229,16 +233,21 @@ func (m *Mon) monitor(vip, rip netip.Addr, port uint16, state *state, c Checks) 
 				}
 
 				now.Last = t
-				now.Time = time.Now().Sub(t)
+				now.Took = time.Now().Sub(t)
 				now.Initialised = true
+
+				var changed bool
+				if !was.Initialised || was.OK != now.OK {
+					changed = true
+					now.When = t
+				}
 
 				state.mutex.Lock()
 				state.status = now
 				state.mutex.Unlock()
 
-				if !was.Initialised || was.OK != now.OK {
+				if changed {
 					//if was.OK != now.OK {
-					now.When = t
 					select {
 					case m.C <- true:
 					default:

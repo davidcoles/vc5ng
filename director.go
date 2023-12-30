@@ -29,12 +29,13 @@ type Service struct {
 }
 
 type Destination struct {
-	Disabled    bool   `json:"disabled"`
-	Initialised bool   `json:"initialised"`
-	Healthy     bool   `json:"healthy"`
-	Weight      uint8  `json:"weight"`
-	Diagnostic  string `json:"diagnostic"`
-	Checks      []mon.Check
+	Disabled bool `json:"disabled"`
+	//Initialised bool  `json:"initialised"`
+	Healthy bool  `json:"healthy"`
+	Weight  uint8 `json:"weight"`
+	//Diagnostic  string     `json:"diagnostic"`
+	Status mon.Status `json:"status"`
+	Checks []mon.Check
 }
 
 func (d *Destination) HealthyWeight() uint8 {
@@ -105,6 +106,7 @@ func (i Service) Compare(j Service) (r int) {
 
 type Balancer interface {
 	Synchronise(map[Tuple]Service)
+	Available(Service) uint16
 }
 
 type Director struct {
@@ -120,6 +122,7 @@ type Director struct {
 type NilBalancer struct{}
 
 func (b *NilBalancer) Synchronise(map[Tuple]Service) {}
+func (b *NilBalancer) Available(Service) uint16      { return 0 }
 
 func (d *Director) balancer() Balancer {
 	b := d.Balancer
@@ -168,7 +171,8 @@ func (d *Director) Configure(cfg map[Tuple]Service) error {
 	vips := map[netip.Addr]bool{}
 	svcs := map[mon.Service]bool{}
 
-	for s, _ := range cfg {
+	// scan previous config to see if vip/service existed ...
+	for s, _ := range d.cfg {
 		vips[s.Addr] = true
 		svcs[mon.Service{Address: s.Addr, Port: s.Port, Protocol: s.Protocol}] = true
 	}
@@ -223,24 +227,25 @@ func (d *Director) Configure(cfg map[Tuple]Service) error {
 	return nil
 }
 
-func (d *Director) RIBv4() (rib [][4]byte) {
-	for _, r := range d.RIB() {
-		if r.Is4() {
-			rib = append(rib, r.As4())
+/*
+	func (d *Director) RIBv4() (rib [][4]byte) {
+		for _, r := range d.RIB() {
+			if r.Is4() {
+				rib = append(rib, r.As4())
+			}
 		}
+		return
 	}
-	return
-}
 
-func (d *Director) RIBv6() (rib [][16]byte) {
-	for _, r := range d.RIB() {
-		if r.Is6() {
-			rib = append(rib, r.As16())
+	func (d *Director) RIBv6() (rib [][16]byte) {
+		for _, r := range d.RIB() {
+			if r.Is6() {
+				rib = append(rib, r.As16())
+			}
 		}
+		return
 	}
-	return
-}
-
+*/
 func (d *Director) RIB() (rib []netip.Addr) {
 	d.mutex.Lock()
 	defer d.mutex.Unlock()
@@ -250,7 +255,10 @@ func (d *Director) RIB() (rib []netip.Addr) {
 	for _, svc := range d.services() {
 		vip := svc.Address
 
-		if svc.Available >= svc.Required {
+		av := d.Balancer.Available(svc)
+
+		//fmt.Println(vip, svc.Available, svc.Required, av)
+		if svc.Available >= svc.Required && av >= uint16(svc.Required) {
 			if _, ok := vips[vip]; !ok {
 				vips[vip] = true
 			}
@@ -309,12 +317,15 @@ func (d *Director) services() map[Tuple]Service {
 
 			status, _ := d.mon.Status(sv, ds)
 
+			//fmt.Println("+++++", ap.Addr, dst.Weight)
+
 			destination := Destination{
-				Weight:      dst.Weight,
-				Disabled:    dst.Disabled,
-				Healthy:     status.OK,
-				Initialised: status.Initialised,
-				Diagnostic:  status.Diagnostic,
+				Weight:   dst.Weight,
+				Disabled: dst.Disabled,
+				Healthy:  status.OK,
+				//Initialised: status.Initialised,
+				//Diagnostic:  status.Diagnostic,
+				Status: status,
 			}
 
 			if destination.HealthyWeight() > 0 {

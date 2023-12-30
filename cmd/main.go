@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"embed"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"sort"
 	"sync"
 	"syscall"
 	"time"
@@ -28,13 +30,13 @@ import (
 	"github.com/davidcoles/vc5ng/mon"
 )
 
-var mutex sync.Mutex
-var pool *bgp.Pool
-var client *xvs.Client
-var config *Config
-var director *vc5ng.Director
+//go:embed static/*
+var STATIC embed.FS
+
+type Client = balancer.Client
 
 func main() {
+	var mutex sync.Mutex
 
 	sock := flag.String("s", "", "socket")
 	native := flag.Bool("n", false, "Native mode XDP")
@@ -67,13 +69,13 @@ func main() {
 		log.Fatal("Address is not IPv4: ", addr)
 	}
 
-	config, err = Load(file)
+	config, err := Load(file)
 
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	client = &xvs.Client{
+	client := &Client{
 		Interfaces: nics,
 		Address:    addr,
 		Redirect:   *redirect,
@@ -91,7 +93,7 @@ func main() {
 
 	go spawn(client.Namespace(), os.Args[0], "-s", socket.Name(), client.NamespaceAddress())
 
-	pool = bgp.NewPool(addr.As4(), config.BGP, nil)
+	pool := bgp.NewPool(addr.As4(), config.BGP, nil)
 
 	if pool == nil {
 		log.Fatal("BGP pool fail")
@@ -99,7 +101,7 @@ func main() {
 
 	af_unix := unix(socket.Name())
 
-	director = &vc5ng.Director{
+	director := &vc5ng.Director{
 		Balancer: &balancer.Balancer{
 			Client: client,
 			ProbeFn: func(addr netip.Addr, check mon.Check) (bool, string) {
@@ -108,21 +110,20 @@ func main() {
 		},
 	}
 
-	director.Start(addr, Parse(config.Services))
+	director.Start(addr, config.Services.parse())
 
 	done := make(chan bool)
-	go signals(file, done)
 
-	rib := director.RIBv4()
+	rib := director.RIB()
 	xyz := map[string][]Serv{}
 
 	go func() {
 		old := map[Key]Stats{}
-		ticker := time.NewTicker(5 * time.Second)
+		ticker := time.NewTicker(1 * time.Second)
 		defer ticker.Stop()
 		for {
 			mutex.Lock()
-			xyz, old = serviceStatus(old)
+			xyz, old = serviceStatus(config, client, director, old)
 			mutex.Unlock()
 			select {
 			case <-done:
@@ -133,7 +134,7 @@ func main() {
 	}()
 
 	go func() { // advertise VIPs via BGP
-		timer := time.NewTimer(30 * time.Second)
+		timer := time.NewTimer(5 * time.Second)
 		var init bool
 		for {
 			select {
@@ -147,7 +148,7 @@ func main() {
 			}
 			if init {
 				mutex.Lock()
-				rib = director.RIBv4()
+				rib = director.RIB()
 				fmt.Println("RIB:", rib)
 				pool.RIB(rib)
 				mutex.Unlock()
@@ -157,10 +158,12 @@ func main() {
 
 	fmt.Println("******************** RUNNING ********************")
 
+	static := http.FS(STATIC)
+	//var fs http.FileSystem
+
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Println(client.Info())
-		w.Header().Set("Content-Type", "text/plain")
-		w.Write([]byte("Hello, World!\n"))
+		r.URL.Path = "static/" + r.URL.Path
+		http.FileServer(static).ServeHTTP(w, r)
 	})
 
 	http.HandleFunc("/vc5ng", func(w http.ResponseWriter, r *http.Request) {
@@ -181,29 +184,23 @@ func main() {
 		w.Write([]byte("\n"))
 	})
 
-	http.HandleFunc("/stats", func(w http.ResponseWriter, r *http.Request) {
+	http.HandleFunc("/stats.json", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-
-		var ribs []netip.Addr
 
 		mutex.Lock()
 
-		for _, r := range rib {
-			ribs = append(ribs, netip.AddrFrom4(r))
-		}
-
 		type status struct {
-			Info     xvs.Info
-			Services map[string][]Serv
-			BGP      map[string]bgp.Status
-			RIB      []netip.Addr
+			Info     xvs.Info              `json:"info"`
+			Services map[string][]Serv     `json:"services"`
+			BGP      map[string]bgp.Status `json:"bgp"`
+			RIB      []netip.Addr          `json:"rib"`
 		}
 
 		js, _ := json.MarshalIndent(&status{
 			Info:     client.Info(),
 			Services: xyz,
 			BGP:      pool.Status(),
-			RIB:      ribs,
+			RIB:      rib,
 		}, " ", " ")
 
 		mutex.Unlock()
@@ -216,11 +213,6 @@ func main() {
 		t := time.Now()
 		p := client.Prefixes()
 		fmt.Println(time.Now().Sub(t))
-		for k, v := range p {
-			if v != 0 {
-				fmt.Println("****", k, v)
-			}
-		}
 		w.Header().Set("Content-Type", "application/json")
 		js, _ := json.Marshal(&p)
 		w.Write(js)
@@ -231,10 +223,37 @@ func main() {
 		log.Fatal(http.ListenAndServe(":80", nil))
 	}()
 
-	<-done
+	sig := make(chan os.Signal)
+	signal.Notify(sig, syscall.SIGINT, syscall.SIGQUIT)
+
+	for {
+		switch <-sig {
+		case syscall.SIGQUIT:
+			fmt.Println("CLOSING")
+			close(done)
+			pool.Close()
+			time.Sleep(time.Second)
+			director.Stop()
+			time.Sleep(time.Second)
+			fmt.Println("DONE")
+			return
+		case syscall.SIGINT:
+			conf, err := Load(file)
+			if err == nil {
+				mutex.Lock()
+				config = conf
+				client.UpdateVLANs(config.VLANs())
+				director.Configure(config.Services.parse())
+				pool.Configure(config.BGP)
+				mutex.Unlock()
+			} else {
+				log.Println(err)
+			}
+		}
+	}
 }
 
-func xvsStatus(client *xvs.Client) *[]interface{} {
+func xvsStatus(client *Client) *[]interface{} {
 
 	type status struct {
 		Service      xvs.ServiceExtended
@@ -251,32 +270,6 @@ func xvsStatus(client *xvs.Client) *[]interface{} {
 	}
 
 	return &ret
-}
-
-func signals(file string, done chan bool) {
-	sig := make(chan os.Signal)
-	signal.Notify(sig, syscall.SIGINT, syscall.SIGQUIT)
-
-	for {
-		switch <-sig {
-		case syscall.SIGQUIT:
-			director.Stop()
-			close(done)
-			fmt.Println("CLOSING")
-		case syscall.SIGINT:
-			conf, err := Load(file)
-			if err == nil {
-				mutex.Lock()
-				config = conf
-				client.UpdateVLANs(config.VLANs())
-				director.Configure(Parse(config.Services))
-				pool.Configure(config.BGP)
-				mutex.Unlock()
-			} else {
-				log.Println(err)
-			}
-		}
-	}
 }
 
 type query struct {
@@ -442,29 +435,35 @@ func unix(socket string) *http.Client {
 	}
 }
 
+/**********************************************************************/
+// Stats
+/**********************************************************************/
+
 type Serv struct {
-	Name         string
-	Description  string
-	Port         uint16
-	Protocol     uint8
-	Required     uint8
-	Available    uint8
-	Stats        Stats
-	Destinations []Dest
+	Name         string     `json:"name,omitempty"`
+	Description  string     `json:"description"`
+	Address      netip.Addr `json:"address"`
+	Port         uint16     `json:"port"`
+	Protocol     protocol   `json:"protocol"`
+	Required     uint8      `json:"required"`
+	Available    uint8      `json:"available"`
+	Stats        Stats      `json:"stats"`
+	Destinations []Dest     `json:"destinations,omitempty"`
 }
 
 type Dest struct {
-	Address    string
-	Port       uint16
-	Stats      Stats
-	Weight     uint8
-	Disabled   bool
-	Up         bool
-	When       uint64
-	Last       uint64
-	Duration   uint64
-	Diagnostic string
-	MAC        string
+	Address    netip.Addr `json:"address"`
+	Port       uint16     `json:"port"`
+	Stats      Stats      `json:"stats"`
+	Weight     uint8      `json:"weight"`
+	Disabled   bool       `json:"disabled"`
+	Up         bool       `json:"up"`
+	For        uint64     `json:"for"`
+	Took       uint64     `json:"took"`
+	When       uint64     `json:"when"`
+	Last       uint64     `json:"last"`
+	Diagnostic string     `json:"diagnostic"`
+	MAC        string     `json:"mac"`
 }
 
 type tuple = IPPortProtocol
@@ -477,13 +476,13 @@ type Key struct {
 }
 
 type Stats struct {
-	Octets           uint64
-	Packets          uint64
-	Flows            uint64
-	Current          uint64
-	OctetsPerSecond  uint64
-	PacketsPerSecond uint64
-	FlowsPerSecond   uint64
+	Octets           uint64 `json:"octets"`
+	Packets          uint64 `json:"packets"`
+	Flows            uint64 `json:"flows"`
+	Current          uint64 `json:"current"`
+	OctetsPerSecond  uint64 `json:"octets_per_second"`
+	PacketsPerSecond uint64 `json:"packets_per_second"`
+	FlowsPerSecond   uint64 `json:"flows_per_second"`
 	time             time.Time
 }
 
@@ -507,7 +506,7 @@ func (s *Stats) xvs(x xvs.Stats, y Stats) Stats {
 	return *s
 }
 
-func serviceStatus(old map[Key]Stats) (map[string][]Serv, map[Key]Stats) {
+func serviceStatus(config *Config, client *Client, director *vc5ng.Director, old map[Key]Stats) (map[string][]Serv, map[Key]Stats) {
 
 	new := map[Key]Stats{}
 	ret := map[string][]Serv{}
@@ -528,8 +527,9 @@ func serviceStatus(old map[Key]Stats) (map[string][]Serv, map[Key]Stats) {
 		serv := Serv{
 			Name:        cnf.Name,
 			Description: cnf.Description,
+			Address:     svc.Address,
 			Port:        svc.Port,
-			Protocol:    svc.Protocol,
+			Protocol:    protocol(svc.Protocol),
 			Required:    svc.Required,
 			Available:   svc.Available,
 		}
@@ -550,12 +550,14 @@ func serviceStatus(old map[Key]Stats) (map[string][]Serv, map[Key]Stats) {
 			s, _ := stats[addr.Addr]
 
 			dest := Dest{
-				Address:    addr.Addr.String(),
+				Address:    addr.Addr,
 				Port:       addr.Port,
 				Disabled:   dst.Disabled,
 				Up:         dst.Healthy,
+				For:        uint64(time.Now().Sub(dst.Status.When) / time.Millisecond),
+				Took:       uint64(dst.Status.Took / time.Millisecond),
+				Diagnostic: dst.Status.Diagnostic,
 				Weight:     dst.Weight,
-				Diagnostic: dst.Diagnostic,
 				MAC:        mac[addr.Addr],
 			}
 
@@ -564,6 +566,10 @@ func serviceStatus(old map[Key]Stats) (map[string][]Serv, map[Key]Stats) {
 
 			serv.Destinations = append(serv.Destinations, dest)
 		}
+
+		sort.SliceStable(serv.Destinations, func(i, j int) bool {
+			return serv.Destinations[i].Address.Compare(serv.Destinations[j].Address) < 0
+		})
 
 		ret[vip] = append(list, serv)
 	}
