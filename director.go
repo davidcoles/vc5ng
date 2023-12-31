@@ -2,7 +2,7 @@ package vc5ng
 
 import (
 	"errors"
-	//"fmt"
+	"fmt"
 	"net/netip"
 	"sort"
 	"sync"
@@ -58,6 +58,10 @@ type IPPortProtocol struct {
 type IPPort struct {
 	Addr netip.Addr
 	Port uint16
+}
+
+func (i IPPort) MarshalText() ([]byte, error) {
+	return []byte(fmt.Sprintf("%s:%d", i.Addr, i.Port)), nil
 }
 
 type Tuple = IPPortProtocol
@@ -227,25 +231,6 @@ func (d *Director) Configure(cfg map[Tuple]Service) error {
 	return nil
 }
 
-/*
-	func (d *Director) RIBv4() (rib [][4]byte) {
-		for _, r := range d.RIB() {
-			if r.Is4() {
-				rib = append(rib, r.As4())
-			}
-		}
-		return
-	}
-
-	func (d *Director) RIBv6() (rib [][16]byte) {
-		for _, r := range d.RIB() {
-			if r.Is6() {
-				rib = append(rib, r.As16())
-			}
-		}
-		return
-	}
-*/
 func (d *Director) RIB() (rib []netip.Addr) {
 	d.mutex.Lock()
 	defer d.mutex.Unlock()

@@ -8,7 +8,7 @@ import (
 	"github.com/davidcoles/xvs"
 )
 
-type Client = xvs.Client2
+type Client = xvs.Client
 
 func (b *Balancer) Available(s vc5ng.Service) (available uint16) {
 

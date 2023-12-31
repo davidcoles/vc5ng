@@ -18,6 +18,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"sort"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -91,13 +92,13 @@ func main() {
 		log.Fatal(err)
 	}
 
-	go spawn(client.Namespace(), os.Args[0], "-s", socket.Name(), client.NamespaceAddress())
-
 	pool := bgp.NewPool(addr.As4(), config.BGP, nil)
 
 	if pool == nil {
 		log.Fatal("BGP pool fail")
 	}
+
+	go spawn(client.Namespace(), os.Args[0], "-s", socket.Name(), client.NamespaceAddress())
 
 	af_unix := unix(socket.Name())
 
@@ -115,7 +116,9 @@ func main() {
 	done := make(chan bool)
 
 	rib := director.RIB()
-	xyz := map[string][]Serv{}
+
+	services := map[string][]Serv{}
+	var summary Summary
 
 	go func() {
 		old := map[Key]Stats{}
@@ -123,18 +126,22 @@ func main() {
 		defer ticker.Stop()
 		for {
 			mutex.Lock()
-			xyz, old = serviceStatus(config, client, director, old)
+			summary.xvs(client.Info(), summary)
+			services, old, summary.Current = serviceStatus(config, client, director, old)
 			mutex.Unlock()
 			select {
+			case <-ticker.C:
 			case <-done:
 				return
-			case <-ticker.C:
 			}
 		}
 	}()
 
 	go func() { // advertise VIPs via BGP
 		timer := time.NewTimer(5 * time.Second)
+		ticker := time.NewTicker(3 * time.Second)
+		old := map[netip.Addr]time.Time{}
+
 		var init bool
 		for {
 			select {
@@ -142,14 +149,34 @@ func main() {
 				if !ok {
 					return
 				}
+			case <-ticker.C:
 			case <-timer.C:
 				fmt.Println("STARTS")
 				init = true
 			}
+
 			if init {
+				new := map[netip.Addr]time.Time{}
+				now := time.Now()
+				var out []netip.Addr
+
+				// VIP needs to be up for at least 5 seconds to be advertised
+				for _, ip := range director.RIB() {
+					if t, exists := old[ip]; exists {
+						if now.Sub(t) > (5 * time.Second) {
+							out = append(out, ip)
+						}
+						new[ip] = t
+					} else {
+						new[ip] = now
+					}
+				}
+
+				old = new
+
+				//fmt.Println("RIB:", rib)
 				mutex.Lock()
-				rib = director.RIB()
-				fmt.Println("RIB:", rib)
+				rib = out
 				pool.RIB(rib)
 				mutex.Unlock()
 			}
@@ -166,12 +193,39 @@ func main() {
 		http.FileServer(static).ServeHTTP(w, r)
 	})
 
-	http.HandleFunc("/vc5ng", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Println(client.Info())
+	http.HandleFunc("/prefixes.json", func(w http.ResponseWriter, r *http.Request) {
+		t := time.Now()
+		p := client.Prefixes()
+		fmt.Println(time.Now().Sub(t))
+		js, _ := json.Marshal(&p)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
+		w.Write(js)
+		w.Write([]byte("\n"))
+	})
+
+	http.HandleFunc("/config.json", func(w http.ResponseWriter, r *http.Request) {
+		js, err := json.MarshalIndent(config, " ", " ")
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(js)
+		w.Write([]byte("\n"))
+	})
+
+	http.HandleFunc("/status.json", func(w http.ResponseWriter, r *http.Request) {
 		status := director.Status()
 		js, err := json.MarshalIndent(&status, " ", " ")
-		fmt.Println(err)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
 		w.Write(js)
 		w.Write([]byte("\n"))
 	})
@@ -190,31 +244,23 @@ func main() {
 		mutex.Lock()
 
 		type status struct {
-			Info     xvs.Info              `json:"info"`
+			Summary  Summary               `json:"summary"`
+			VIP      []Foo                 `json:"vip"`
 			Services map[string][]Serv     `json:"services"`
 			BGP      map[string]bgp.Status `json:"bgp"`
 			RIB      []netip.Addr          `json:"rib"`
 		}
 
 		js, _ := json.MarshalIndent(&status{
-			Info:     client.Info(),
-			Services: xyz,
+			Summary:  summary,
+			VIP:      vipStatus(services, rib),
+			Services: services,
 			BGP:      pool.Status(),
 			RIB:      rib,
 		}, " ", " ")
 
 		mutex.Unlock()
 
-		w.Write(js)
-		w.Write([]byte("\n"))
-	})
-
-	http.HandleFunc("/prefixes", func(w http.ResponseWriter, r *http.Request) {
-		t := time.Now()
-		p := client.Prefixes()
-		fmt.Println(time.Now().Sub(t))
-		w.Header().Set("Content-Type", "application/json")
-		js, _ := json.Marshal(&p)
 		w.Write(js)
 		w.Write([]byte("\n"))
 	})
@@ -449,6 +495,9 @@ type Serv struct {
 	Available    uint8      `json:"available"`
 	Stats        Stats      `json:"stats"`
 	Destinations []Dest     `json:"destinations,omitempty"`
+	Up           bool       `json:"up"`
+	For          uint64     `json:"for"`
+	Last         uint64     `json:"last"`
 }
 
 type Dest struct {
@@ -486,11 +535,28 @@ type Stats struct {
 	time             time.Time
 }
 
+type Summary struct {
+	Latency          uint64 `json:"latency_ns"`
+	Dropped          uint64 `json:"dropped"`
+	Blocked          uint64 `json:"blocked"`
+	DroppedPerSecond uint64 `json:"dropped_per_second"`
+	BlockedPerSecond uint64 `json:"blocked_per_second"`
+
+	Octets           uint64 `json:"octets"`
+	Packets          uint64 `json:"packets"`
+	Flows            uint64 `json:"flows"`
+	Current          uint64 `json:"current"`
+	OctetsPerSecond  uint64 `json:"octets_per_second"`
+	PacketsPerSecond uint64 `json:"packets_per_second"`
+	FlowsPerSecond   uint64 `json:"flows_per_second"`
+	time             time.Time
+}
+
 func (s *Stats) xvs(x xvs.Stats, y Stats) Stats {
 	s.Octets = x.Octets
 	s.Packets = x.Packets
 	s.Flows = x.Flows
-	//s.Current = x.Current
+	s.Current = x.Current
 	s.time = time.Now()
 
 	if y.time.Unix() != 0 {
@@ -506,7 +572,80 @@ func (s *Stats) xvs(x xvs.Stats, y Stats) Stats {
 	return *s
 }
 
-func serviceStatus(config *Config, client *Client, director *vc5ng.Director, old map[Key]Stats) (map[string][]Serv, map[Key]Stats) {
+func (s *Stats) add(x Stats) {
+	s.Octets += x.Octets
+	s.Packets += x.Packets
+	s.Flows += x.Flows
+	s.Current += x.Current
+	s.OctetsPerSecond += x.OctetsPerSecond
+	s.PacketsPerSecond += x.PacketsPerSecond
+	s.FlowsPerSecond += x.FlowsPerSecond
+}
+
+func (s *Summary) xvs(x xvs.Info, y Summary) Summary {
+	s.Latency = x.Latency
+	s.Dropped = x.Dropped
+	s.Blocked = x.Blocked
+
+	s.Octets = x.Octets
+	s.Packets = x.Packets
+	s.Flows = x.Flows
+	//s.Current = x.Current
+	s.time = time.Now()
+
+	if y.time.Unix() != 0 {
+		diff := uint64(s.time.Sub(y.time) / time.Millisecond)
+
+		if diff != 0 {
+			s.DroppedPerSecond = (1000 * (s.Dropped - y.Dropped)) / diff
+			s.BlockedPerSecond = (1000 * (s.Blocked - y.Blocked)) / diff
+
+			s.OctetsPerSecond = (1000 * (s.Octets - y.Octets)) / diff
+			s.PacketsPerSecond = (1000 * (s.Packets - y.Packets)) / diff
+			s.FlowsPerSecond = (1000 * (s.Flows - y.Flows)) / diff
+		}
+	}
+
+	return *s
+}
+
+type Foo struct {
+	VIP   string `json:"vip"`
+	Up    bool   `json:"up"`
+	Stats Stats  `json:"stats"`
+}
+
+func vipStatus(in map[string][]Serv, rib []netip.Addr) (out []Foo) {
+
+	foo := map[string]bool{}
+
+	for _, r := range rib {
+		foo[r.String()] = true
+	}
+
+	for vip, list := range in {
+
+		var stats Stats
+		//var up bool = true
+
+		for _, s := range list {
+			stats.add(s.Stats)
+		}
+
+		out = append(out, Foo{VIP: vip, Stats: stats, Up: foo[vip]})
+
+	}
+
+	sort.SliceStable(out, func(i, j int) bool {
+		return strings.Compare(out[i].VIP, out[j].VIP) < 0
+	})
+
+	return
+}
+
+func serviceStatus(config *Config, client *Client, director *vc5ng.Director, old map[Key]Stats) (map[string][]Serv, map[Key]Stats, uint64) {
+
+	var current uint64
 
 	new := map[Key]Stats{}
 	ret := map[string][]Serv{}
@@ -532,6 +671,7 @@ func serviceStatus(config *Config, client *Client, director *vc5ng.Director, old
 			Protocol:    protocol(svc.Protocol),
 			Required:    svc.Required,
 			Available:   svc.Available,
+			Up:          svc.Available >= svc.Required,
 		}
 
 		key := Key{VIP: svc.Address, Port: svc.Port, Protocol: svc.Protocol}
@@ -544,6 +684,7 @@ func serviceStatus(config *Config, client *Client, director *vc5ng.Director, old
 		for _, d := range xd {
 			stats[d.Destination.Address] = d.Stats
 			mac[d.Destination.Address] = d.MAC.String()
+			current += d.Stats.Current
 		}
 
 		for addr, dst := range svc.Destinations {
@@ -574,5 +715,5 @@ func serviceStatus(config *Config, client *Client, director *vc5ng.Director, old
 		ret[vip] = append(list, serv)
 	}
 
-	return ret, new
+	return ret, new, current
 }
