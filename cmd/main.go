@@ -18,7 +18,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"sort"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -117,7 +116,7 @@ func main() {
 
 	rib := director.RIB()
 
-	services := map[string][]Serv{}
+	services, _, _ := serviceStatus(config, client, director, nil)
 	var summary Summary
 
 	go func() {
@@ -239,28 +238,29 @@ func main() {
 	})
 
 	http.HandleFunc("/stats.json", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-
-		mutex.Lock()
-
 		type status struct {
+			Services map[VIP][]Serv        `json:"services"`
 			Summary  Summary               `json:"summary"`
 			VIP      []Foo                 `json:"vip"`
-			Services map[string][]Serv     `json:"services"`
 			BGP      map[string]bgp.Status `json:"bgp"`
 			RIB      []netip.Addr          `json:"rib"`
 		}
 
-		js, _ := json.MarshalIndent(&status{
+		mutex.Lock()
+		js, err := json.MarshalIndent(&status{
+			Services: services,
 			Summary:  summary,
 			VIP:      vipStatus(services, rib),
-			Services: services,
 			BGP:      pool.Status(),
 			RIB:      rib,
 		}, " ", " ")
-
 		mutex.Unlock()
 
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
 		w.Write(js)
 		w.Write([]byte("\n"))
 	})
@@ -610,17 +610,17 @@ func (s *Summary) xvs(x xvs.Info, y Summary) Summary {
 }
 
 type Foo struct {
-	VIP   string `json:"vip"`
-	Up    bool   `json:"up"`
-	Stats Stats  `json:"stats"`
+	VIP   VIP   `json:"vip"`
+	Up    bool  `json:"up"`
+	Stats Stats `json:"stats"`
 }
 
-func vipStatus(in map[string][]Serv, rib []netip.Addr) (out []Foo) {
+func vipStatus(in map[VIP][]Serv, rib []netip.Addr) (out []Foo) {
 
-	foo := map[string]bool{}
+	foo := map[VIP]bool{}
 
 	for _, r := range rib {
-		foo[r.String()] = true
+		foo[r] = true
 	}
 
 	for vip, list := range in {
@@ -637,24 +637,27 @@ func vipStatus(in map[string][]Serv, rib []netip.Addr) (out []Foo) {
 	}
 
 	sort.SliceStable(out, func(i, j int) bool {
-		return strings.Compare(out[i].VIP, out[j].VIP) < 0
+		return out[i].VIP.Compare(out[j].VIP) < 0
 	})
 
 	return
 }
 
-func serviceStatus(config *Config, client *Client, director *vc5ng.Director, old map[Key]Stats) (map[string][]Serv, map[Key]Stats, uint64) {
+// type VIP = string
+type VIP = netip.Addr
+
+func serviceStatus(config *Config, client *Client, director *vc5ng.Director, old map[Key]Stats) (map[VIP][]Serv, map[Key]Stats, uint64) {
 
 	var current uint64
 
 	new := map[Key]Stats{}
-	ret := map[string][]Serv{}
+	ret := map[VIP][]Serv{}
 
 	services := director.Status()
 
 	for _, svc := range services {
 
-		vip := svc.Address.String()
+		vip := svc.Address //.String()
 
 		list, _ := ret[vip]
 
