@@ -87,9 +87,8 @@ type state struct {
 
 type status = Status
 type Status struct {
-	OK         bool
-	Diagnostic string
-	//Time        time.Duration
+	OK          bool
+	Diagnostic  string
 	Took        time.Duration
 	Last        time.Time
 	When        time.Time
@@ -213,8 +212,6 @@ func (m *Mon) monitor(vip, rip netip.Addr, port uint16, state *state, c Checks) 
 				copy(history[0:], history[1:])
 				history[4] = ok
 
-				//fmt.Println("HISTORY:", history, "XXXXXXXXXXXXXXXXXXXX", ok, now.Diagnostic)
-
 				var passed int
 				for _, v := range history {
 					if v {
@@ -247,7 +244,6 @@ func (m *Mon) monitor(vip, rip netip.Addr, port uint16, state *state, c Checks) 
 				state.mutex.Unlock()
 
 				if changed {
-					//if was.OK != now.OK {
 					select {
 					case m.C <- true:
 					default:
@@ -290,14 +286,12 @@ type method = bool
 
 type Prober interface {
 	Probe(netip.Addr, netip.Addr, Check) (bool, string)
-	//Resets() bool
 }
 
 type prober struct {
 	m *Mon
 }
 
-// func (p prober) Resets() bool { return false }
 func (p prober) Probe(vip, rip netip.Addr, check Check) (bool, string) {
 	return p.m.Probe(vip, rip, check)
 }
@@ -310,8 +304,6 @@ func (m *Mon) Probes(vip, rip netip.Addr, port uint16, checks Checks) (bool, str
 		}
 
 		ok, s := m.prober.Probe(vip, rip, c)
-
-		//fmt.Println("RESULT:", ok, s)
 
 		if !ok {
 			return ok, c.Type + ": " + s

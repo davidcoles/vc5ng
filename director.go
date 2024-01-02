@@ -29,17 +29,14 @@ type Service struct {
 }
 
 type Destination struct {
-	Disabled bool `json:"disabled"`
-	//Initialised bool  `json:"initialised"`
-	Healthy bool  `json:"healthy"`
-	Weight  uint8 `json:"weight"`
-	//Diagnostic  string     `json:"diagnostic"`
-	Status mon.Status `json:"status"`
-	Checks []mon.Check
+	Disabled bool       `json:"disabled"`
+	Weight   uint8      `json:"weight"`
+	Status   mon.Status `json:"status"`
+	Checks   []mon.Check
 }
 
 func (d *Destination) HealthyWeight() uint8 {
-	if !d.Disabled && d.Healthy && d.Weight > 0 {
+	if !d.Disabled && d.Status.OK && d.Weight > 0 {
 		return 1
 	}
 	return 0
@@ -84,28 +81,20 @@ func (p protocol) MarshalText() ([]byte, error) {
 	return []byte("Unknown"), nil
 }
 
-func (i Service) Compare(j Service) (r int) {
-	if r = i.Address.Compare(j.Address); r != 0 {
-		return r
+func (i Service) Less(j Service) bool {
+	if r := i.Address.Compare(j.Address); r != 0 {
+		return r < 0
 	}
 
-	if i.Port < j.Port {
-		return -1
+	if i.Port != j.Port {
+		return i.Port < j.Port
 	}
 
-	if i.Port > j.Port {
-		return 1
+	if i.Protocol != j.Protocol {
+		return i.Protocol < j.Protocol
 	}
 
-	if i.Protocol < j.Protocol {
-		return -1
-	}
-
-	if i.Protocol > j.Protocol {
-		return 1
-	}
-
-	return 0
+	return false
 }
 
 type Balancer interface {
@@ -302,15 +291,10 @@ func (d *Director) services() map[Tuple]Service {
 
 			status, _ := d.mon.Status(sv, ds)
 
-			//fmt.Println("+++++", ap.Addr, dst.Weight)
-
 			destination := Destination{
 				Weight:   dst.Weight,
 				Disabled: dst.Disabled,
-				Healthy:  status.OK,
-				//Initialised: status.Initialised,
-				//Diagnostic:  status.Diagnostic,
-				Status: status,
+				Status:   status,
 			}
 
 			if destination.HealthyWeight() > 0 {
@@ -336,9 +320,11 @@ func (d *Director) Status() (services []Service) {
 		services = append(services, s)
 	}
 
-	sort.SliceStable(services, func(i, j int) bool {
-		return services[i].Compare(services[j]) < 0
-	})
+	//sort.SliceStable(services, func(i, j int) bool {
+	//	return services[i].Compare(services[j]) < 0
+	//ç∂})
+
+	sort.SliceStable(services, func(i, j int) bool { return services[i].Less(services[j]) })
 
 	return services
 }

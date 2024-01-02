@@ -82,7 +82,6 @@ func main() {
 		Native:     *native,
 		VLANs:      config.VLANs(),
 		NAT:        true,
-		//Namespace: "vc5",
 	}
 
 	err = client.Start()
@@ -399,7 +398,7 @@ func spawn(netns string, args ...string) {
 func netns(socket string, addr netip.Addr) {
 
 	go func() {
-		// if stding is closed (parent dies) then exit
+		// if stdin is closed (parent dies) then exit
 		reader := bufio.NewReader(os.Stdin)
 		_, _, err := reader.ReadRune()
 
@@ -448,7 +447,7 @@ func netns(socket string, addr netip.Addr) {
 		}
 
 		rip := netip.MustParseAddr(q.Addr)
-		vip := rip // fake the vip - NAT will take care of filling the right address in
+		vip := rip // fake the vip - NAT will take care of filling in the right address
 
 		var rep reply
 
@@ -590,7 +589,6 @@ func (s *Summary) xvs(x xvs.Info, y Summary) Summary {
 	s.Octets = x.Octets
 	s.Packets = x.Packets
 	s.Flows = x.Flows
-	//s.Current = x.Current
 	s.time = time.Now()
 
 	if y.time.Unix() != 0 {
@@ -624,16 +622,12 @@ func vipStatus(in map[VIP][]Serv, rib []netip.Addr) (out []Foo) {
 	}
 
 	for vip, list := range in {
-
 		var stats Stats
-		//var up bool = true
-
 		for _, s := range list {
 			stats.add(s.Stats)
 		}
 
 		out = append(out, Foo{VIP: vip, Stats: stats, Up: foo[vip]})
-
 	}
 
 	sort.SliceStable(out, func(i, j int) bool {
@@ -643,7 +637,6 @@ func vipStatus(in map[VIP][]Serv, rib []netip.Addr) (out []Foo) {
 	return
 }
 
-// type VIP = string
 type VIP = netip.Addr
 
 func serviceStatus(config *Config, client *Client, director *vc5ng.Director, old map[Key]Stats) (map[VIP][]Serv, map[Key]Stats, uint64) {
@@ -657,7 +650,7 @@ func serviceStatus(config *Config, client *Client, director *vc5ng.Director, old
 
 	for _, svc := range services {
 
-		vip := svc.Address //.String()
+		vip := svc.Address
 
 		list, _ := ret[vip]
 
@@ -697,7 +690,7 @@ func serviceStatus(config *Config, client *Client, director *vc5ng.Director, old
 				Address:    addr.Addr,
 				Port:       addr.Port,
 				Disabled:   dst.Disabled,
-				Up:         dst.Healthy,
+				Up:         dst.Status.OK,
 				For:        uint64(time.Now().Sub(dst.Status.When) / time.Millisecond),
 				Took:       uint64(dst.Status.Took / time.Millisecond),
 				Diagnostic: dst.Status.Diagnostic,
