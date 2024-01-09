@@ -2,3 +2,38 @@
 
 Next generation code for VC5
 
+
+
+==================
+WARNING: DATA RACE
+Write at 0x00c00011c008 by goroutine 1965042:
+  github.com/davidcoles/vc5ng/bgp.(*myconn).drain()
+      /root/vc5ng/bgp/connection.go:155 +0x244
+  github.com/davidcoles/vc5ng/bgp.(*myconn).writer()
+      /root/vc5ng/bgp/connection.go:177 +0x25b
+  github.com/davidcoles/vc5ng/bgp.new_connection.func1()
+      /root/vc5ng/bgp/connection.go:76 +0x39
+
+Previous write at 0x00c00011c008 by goroutine 1965043:
+  github.com/davidcoles/vc5ng/bgp.(*myconn).reader()
+      /root/vc5ng/bgp/connection.go:239 +0x8c8
+  github.com/davidcoles/vc5ng/bgp.new_connection.func2()
+      /root/vc5ng/bgp/connection.go:77 +0x39
+
+Goroutine 1965042 (running) created at:
+  github.com/davidcoles/vc5ng/bgp.new_connection()
+      /root/vc5ng/bgp/connection.go:76 +0x5c5
+  github.com/davidcoles/vc5ng/bgp.(*Session).try()
+      /root/vc5ng/bgp/session.go:228 +0x13c
+  github.com/davidcoles/vc5ng/bgp.(*Session).session.func1()
+      /root/vc5ng/bgp/session.go:172 +0x2a6
+
+Goroutine 1965043 (finished) created at:
+  github.com/davidcoles/vc5ng/bgp.new_connection()
+      /root/vc5ng/bgp/connection.go:77 +0x63d
+  github.com/davidcoles/vc5ng/bgp.(*Session).try()
+      /root/vc5ng/bgp/session.go:228 +0x13c
+  github.com/davidcoles/vc5ng/bgp.(*Session).session.func1()
+      /root/vc5ng/bgp/session.go:172 +0x2a6
+==================
+

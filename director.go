@@ -46,6 +46,7 @@ func DestinationKey(addr netip.Addr, port uint16) IPPort {
 	return IPPort{Addr: addr, Port: port}
 }
 
+type Tuple = IPPortProtocol
 type IPPortProtocol struct {
 	Addr     netip.Addr
 	Port     uint16
@@ -61,7 +62,6 @@ func (i IPPort) MarshalText() ([]byte, error) {
 	return []byte(fmt.Sprintf("%s:%d", i.Addr, i.Port)), nil
 }
 
-type Tuple = IPPortProtocol
 type Check = mon.Check
 type Target = map[Tuple]Service
 
@@ -319,10 +319,6 @@ func (d *Director) Status() (services []Service) {
 	for _, s := range d.services() {
 		services = append(services, s)
 	}
-
-	//sort.SliceStable(services, func(i, j int) bool {
-	//	return services[i].Compare(services[j]) < 0
-	//ç∂})
 
 	sort.SliceStable(services, func(i, j int) bool { return services[i].Less(services[j]) })
 

@@ -43,7 +43,7 @@ type Service struct {
 	//Scheduler types.Scheduler `json:"scheduler"`
 }
 
-type services map[ipp]Service
+type services map[Tuple]Service
 
 // Load balancer configuration
 type Config struct {
@@ -172,14 +172,14 @@ func (i *ipport) UnmarshalText(data []byte) error {
 
 /**********************************************************************/
 
-type ipp = IPPortProtocol
+type Tuple = IPPortProtocol
 type IPPortProtocol struct {
 	Addr     netip.Addr
 	Port     uint16
 	Protocol uint8
 }
 
-func (i *ipp) Compare(j *ipp) (r int) {
+func (i *IPPortProtocol) Compare(j *IPPortProtocol) (r int) {
 	if r = i.Addr.Compare(j.Addr); r != 0 {
 		return r
 	}
@@ -203,7 +203,7 @@ func (i *ipp) Compare(j *ipp) (r int) {
 	return 0
 }
 
-func (i *ipp) MarshalJSON() ([]byte, error) {
+func (i *IPPortProtocol) MarshalJSON() ([]byte, error) {
 	text, err := i.MarshalText()
 
 	if err != nil {
@@ -213,7 +213,7 @@ func (i *ipp) MarshalJSON() ([]byte, error) {
 	return []byte(`"` + string(text) + `"`), nil
 }
 
-func (i *ipp) UnmarshalJSON(data []byte) error {
+func (i *IPPortProtocol) UnmarshalJSON(data []byte) error {
 
 	l := len(data)
 
@@ -224,7 +224,7 @@ func (i *ipp) UnmarshalJSON(data []byte) error {
 	return i.UnmarshalText(data[1 : l-1])
 }
 
-func (i ipp) MarshalText() ([]byte, error) {
+func (i IPPortProtocol) MarshalText() ([]byte, error) {
 
 	var p string
 
@@ -240,7 +240,7 @@ func (i ipp) MarshalText() ([]byte, error) {
 	return []byte(fmt.Sprintf("%s:%d:%s", i.Addr, i.Port, p)), nil
 }
 
-func (i *ipp) UnmarshalText(data []byte) error {
+func (i *IPPortProtocol) UnmarshalText(data []byte) error {
 
 	text := string(data)
 

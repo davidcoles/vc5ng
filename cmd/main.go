@@ -115,17 +115,17 @@ func main() {
 
 	rib := director.RIB()
 
-	services, _, _ := serviceStatus(config, client, director, nil)
 	var summary Summary
 
+	services, old, serviceState, _ := serviceStatus(config, client, director, nil, nil)
+
 	go func() {
-		old := map[Key]Stats{}
 		ticker := time.NewTicker(1 * time.Second)
 		defer ticker.Stop()
 		for {
 			mutex.Lock()
 			summary.xvs(client.Info(), summary)
-			services, old, summary.Current = serviceStatus(config, client, director, old)
+			services, old, serviceState, summary.Current = serviceStatus(config, client, director, old, serviceState)
 			mutex.Unlock()
 			select {
 			case <-ticker.C:
@@ -229,9 +229,22 @@ func main() {
 	})
 
 	http.HandleFunc("/xvs", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Println(client.Info())
+		var ret []interface{}
+		type status struct {
+			Service      xvs.ServiceExtended
+			Destinations []xvs.DestinationExtended
+		}
+		svcs, _ := client.Services()
+		for _, se := range svcs {
+			dsts, _ := client.Destinations(se.Service)
+			ret = append(ret, status{Service: se, Destinations: dsts})
+		}
+		js, err := json.MarshalIndent(&ret, " ", " ")
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
-		js, _ := json.MarshalIndent(xvsStatus(client), " ", " ")
 		w.Write(js)
 		w.Write([]byte("\n"))
 	})
@@ -296,25 +309,6 @@ func main() {
 			}
 		}
 	}
-}
-
-func xvsStatus(client *Client) *[]interface{} {
-
-	type status struct {
-		Service      xvs.ServiceExtended
-		Destinations []xvs.DestinationExtended
-	}
-
-	var ret []interface{}
-
-	svcs, _ := client.Services()
-
-	for _, se := range svcs {
-		dsts, _ := client.Destinations(se.Service)
-		ret = append(ret, status{Service: se, Destinations: dsts})
-	}
-
-	return &ret
 }
 
 type query struct {
@@ -514,13 +508,16 @@ type Dest struct {
 	MAC        string     `json:"mac"`
 }
 
-type tuple = IPPortProtocol
-
 type Key struct {
 	VIP      netip.Addr
 	RIP      netip.Addr
 	Port     uint16
 	Protocol uint8
+}
+
+type State struct {
+	up   bool
+	time time.Time
 }
 
 type Stats struct {
@@ -535,11 +532,13 @@ type Stats struct {
 }
 
 type Summary struct {
-	Latency          uint64 `json:"latency_ns"`
-	Dropped          uint64 `json:"dropped"`
-	Blocked          uint64 `json:"blocked"`
-	DroppedPerSecond uint64 `json:"dropped_per_second"`
-	BlockedPerSecond uint64 `json:"blocked_per_second"`
+	Latency            uint64 `json:"latency_ns"`
+	Dropped            uint64 `json:"dropped"`
+	Blocked            uint64 `json:"blocked"`
+	NotQueued          uint64 `json:"notqueued"`
+	DroppedPerSecond   uint64 `json:"dropped_per_second"`
+	BlockedPerSecond   uint64 `json:"blocked_per_second"`
+	NotQueuedPerSecond uint64 `json:"notqueued_per_second"`
 
 	Octets           uint64 `json:"octets"`
 	Packets          uint64 `json:"packets"`
@@ -597,6 +596,7 @@ func (s *Summary) xvs(x xvs.Info, y Summary) Summary {
 		if diff != 0 {
 			s.DroppedPerSecond = (1000 * (s.Dropped - y.Dropped)) / diff
 			s.BlockedPerSecond = (1000 * (s.Blocked - y.Blocked)) / diff
+			s.NotQueuedPerSecond = (1000 * (s.NotQueued - y.NotQueued)) / diff
 
 			s.OctetsPerSecond = (1000 * (s.Octets - y.Octets)) / diff
 			s.PacketsPerSecond = (1000 * (s.Packets - y.Packets)) / diff
@@ -639,25 +639,29 @@ func vipStatus(in map[VIP][]Serv, rib []netip.Addr) (out []Foo) {
 
 type VIP = netip.Addr
 
-func serviceStatus(config *Config, client *Client, director *vc5ng.Director, old map[Key]Stats) (map[VIP][]Serv, map[Key]Stats, uint64) {
+func serviceStatus(config *Config, client *Client, director *vc5ng.Director, _stats map[Key]Stats, _state map[Tuple]State) (map[VIP][]Serv, map[Key]Stats, map[Tuple]State, uint64) {
 
 	var current uint64
 
-	new := map[Key]Stats{}
-	ret := map[VIP][]Serv{}
+	state := map[Tuple]State{}
+	stats := map[Key]Stats{}
+	status := map[VIP][]Serv{}
 
-	services := director.Status()
-
-	for _, svc := range services {
-
-		vip := svc.Address
-
-		list, _ := ret[vip]
+	for _, svc := range director.Status() {
 
 		xs := xvs.Service{Address: svc.Address, Port: svc.Port, Protocol: xvs.Protocol(svc.Protocol)}
 		xse, _ := client.Service(xs)
 
-		cnf, _ := config.Services[tuple{Addr: svc.Address, Port: svc.Port, Protocol: svc.Protocol}]
+		t := Tuple{Addr: svc.Address, Port: svc.Port, Protocol: svc.Protocol}
+		cnf, _ := config.Services[t]
+
+		up := svc.Available >= svc.Required
+
+		if s, exists := _state[t]; !exists || s.up != up {
+			state[t] = State{up: up, time: time.Now()}
+		} else {
+			state[t] = s
+		}
 
 		serv := Serv{
 			Name:        cnf.Name,
@@ -667,24 +671,25 @@ func serviceStatus(config *Config, client *Client, director *vc5ng.Director, old
 			Protocol:    protocol(svc.Protocol),
 			Required:    svc.Required,
 			Available:   svc.Available,
-			Up:          svc.Available >= svc.Required,
+			Up:          up,
+			For:         uint64(time.Now().Sub(state[t].time) / time.Millisecond),
 		}
 
 		key := Key{VIP: svc.Address, Port: svc.Port, Protocol: svc.Protocol}
-		new[key] = serv.Stats.xvs(xse.Stats, old[key])
+		stats[key] = serv.Stats.xvs(xse.Stats, _stats[key])
 
-		stats := map[netip.Addr]xvs.Stats{}
+		xvs := map[netip.Addr]xvs.Stats{}
 		mac := map[netip.Addr]string{}
 
 		xd, _ := client.Destinations(xs)
 		for _, d := range xd {
-			stats[d.Destination.Address] = d.Stats
+			xvs[d.Destination.Address] = d.Stats
 			mac[d.Destination.Address] = d.MAC.String()
 			current += d.Stats.Current
 		}
 
 		for addr, dst := range svc.Destinations {
-			s, _ := stats[addr.Addr]
+			s, _ := xvs[addr.Addr]
 
 			dest := Dest{
 				Address:    addr.Addr,
@@ -699,7 +704,7 @@ func serviceStatus(config *Config, client *Client, director *vc5ng.Director, old
 			}
 
 			key := Key{VIP: svc.Address, RIP: addr.Addr, Port: svc.Port, Protocol: svc.Protocol}
-			new[key] = dest.Stats.xvs(s, old[key])
+			stats[key] = dest.Stats.xvs(s, _stats[key])
 
 			serv.Destinations = append(serv.Destinations, dest)
 		}
@@ -708,8 +713,8 @@ func serviceStatus(config *Config, client *Client, director *vc5ng.Director, old
 			return serv.Destinations[i].Address.Compare(serv.Destinations[j].Address) < 0
 		})
 
-		ret[vip] = append(list, serv)
+		status[svc.Address] = append(status[svc.Address], serv)
 	}
 
-	return ret, new, current
+	return status, stats, state, current
 }
