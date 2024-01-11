@@ -20,6 +20,7 @@ package mon
 
 import (
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io/ioutil"
 	"net"
@@ -279,10 +280,44 @@ type Check struct {
 	Expect []int `json:"expect,omitempty"`
 
 	// Method - HTTP: GET=false, HEAD=true DNS: UDP=false TCP=true
-	Method bool `json:"method,omitempty"`
+	Method method `json:"method,omitempty"`
 }
 
-type method = bool
+type method bool
+
+func (m *method) UnmarshalJSON(data []byte) error {
+
+	s := string(data)
+
+	switch s {
+	case "true":
+		*m = true
+		return nil
+	case "false":
+		*m = false
+		return nil
+	case `"HEAD"`:
+		*m = true
+		return nil
+	case `"GET"`:
+		*m = false
+		return nil
+	case `"TCP"`:
+		*m = true
+		return nil
+	case `"UDP"`:
+		*m = false
+		return nil
+	case `"tcp"`:
+		*m = true
+		return nil
+	case `"udp"`:
+		*m = false
+		return nil
+	}
+
+	return errors.New("Badly formed method: " + s)
+}
 
 type Prober interface {
 	Probe(netip.Addr, netip.Addr, Check) (bool, string)
@@ -316,13 +351,13 @@ func (m *Mon) Probes(vip, rip netip.Addr, port uint16, checks Checks) (bool, str
 func (m *Mon) Probe(vip, addr netip.Addr, c Check) (ok bool, s string) {
 	switch c.Type {
 	case "http":
-		ok, s = m.HTTP(addr, c.Port, false, c.Method, c.Host, c.Path, c.Expect...)
+		ok, s = m.HTTP(addr, c.Port, false, bool(c.Method), c.Host, c.Path, c.Expect...)
 	case "https":
-		ok, s = m.HTTP(addr, c.Port, true, c.Method, c.Host, c.Path, c.Expect...)
+		ok, s = m.HTTP(addr, c.Port, true, bool(c.Method), c.Host, c.Path, c.Expect...)
 	case "syn":
 		ok, s = m.SYN(addr, c.Port)
 	case "dns":
-		ok, s = m.DNS(addr, c.Port, c.Method)
+		ok, s = m.DNS(addr, c.Port, bool(c.Method))
 	default:
 		s = "Unknown check type"
 	}
@@ -402,6 +437,7 @@ func (m *Mon) HTTP(addr netip.Addr, port uint16, https bool, head bool, host, pa
 			return true, resp.Status
 		}
 	}
+
 	return false, resp.Status
 }
 

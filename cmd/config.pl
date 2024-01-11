@@ -10,45 +10,34 @@ use Getopt::Std;
 
 getopts('nh', \my %opts);
 
-if(1) {
-    my $conf = YAML::Load(join('', <>));
-    my $json = {};
-    
-    my $policy = $conf->{'policy'};
-    my $services = $conf->{'services'};
-    my $servers = $conf->{'servers'};
-    
-    my %defaults;
-    
-    my $scheduler = $conf->{'scheduler'} if exists $conf->{'scheduler'};
-    
-    $json->{'services'} = services($scheduler, $services, \%defaults, $servers, $policy);
-    $json->{'bgp'} = new_rhi($conf->{'rhi'}, $conf->{'prefixes'});
-    
-    $conf->{'learn'}+=0 if defined $conf->{'learn'};
-    #$conf->{'rhi'}->{'listen'} = $conf->{'rhi'}->{'listen'} =~ /^(yes|true|on|y)$/i ? JSON::true : JSON::false;
-    #$conf->{'rhi'}->{'as_number'}+= 0 if defined $conf->{'rhi'}->{'as_number'};
-    #$conf->{'rhi'}->{'hold_time'}+= 0 if defined $conf->{'rhi'}->{'hold_time'};
-    #$conf->{'rhi'}->{'local_pref'}+= 0 if defined $conf->{'rhi'}->{'local_pref'};        
-    #$conf->{'rhi'}->{'med'}+= 0 if defined $conf->{'rhi'}->{'med'};
-    
+my $conf = YAML::Load(join('', <>));
+my $json = {};
 
-    #foreach(qw(learn multicast rhi webserver interfaces vlans)) {
-    foreach(qw(learn multicast  webserver interfaces vlans)) {
-	$json->{$_} = $conf->{$_} if exists $conf->{$_};
-    }
-    
-    print to_json($json, {pretty => 1, canonical => 1});
+my $policy = $conf->{'policy'};
+my $services = $conf->{'services'};
+my $servers = $conf->{'servers'};
+
+my %defaults;
+
+my $scheduler = $conf->{'scheduler'} if exists $conf->{'scheduler'};
+
+$json->{'services'} = services($scheduler, $services, \%defaults, $servers, $policy);
+$json->{'bgp'} = new_rhi($conf->{'rhi'}, $conf->{'prefixes'});
+$conf->{'learn'}+=0 if defined $conf->{'learn'};
+
+foreach(qw(learn multicast  webserver interfaces vlans)) {
+    $json->{$_} = $conf->{$_} if exists $conf->{$_};
 }
+
+print to_json($json, {pretty => 1, canonical => 1});
+
+exit;
 
 sub services {
     my($scheduler, $services, $defaults, $servers, $policy) = @_;
     my %defaults = %$defaults;
-    
-    
     my %out;
 	
-
     foreach my $s (@$services) {
 
 	$defaults{_host} = key($s, 'host',        undef); # checks
@@ -114,8 +103,11 @@ sub services {
 		my %rips;
 
 		my $checks = checklist(@{$p->{_chks}});
-
 		my $bind =  $p->{_bind}+0;
+
+		if($bind != 0 && $bind < 1 || $bind > 65535) {
+		    die "bind: $bind\n";
+		}
 
 		if(!defined $opts{'n'} && $bind != $p->{_port}) {
 		    die "port mismatch!";
@@ -149,16 +141,42 @@ sub checklist {
 	$c{'port'} = $p if $p > 0;
 	if($t eq 'dns') {
 	    $c{'method'} = $c->{_meth} if defined $c->{_meth};
+	    #$c{'method'} = $c->{_meth} eq "tcp" ? JSON::true : JSON::false if defined $c->{_meth};
 	}
 	if($t =~ /^(http|https)$/) {
 	    $c{'host'}   = $c->{_host} if defined $c->{_host};
 	    $c{'path'}   = $c->{_path} if defined $c->{_path};
-	    $c{'method'} = JSON::true if $c->{_meth} eq "HEAD"; #$c->{_meth} if defined $c->{_meth};
-	    $c{'expect'} = [ $c->{_expc}+0 ] if defined $c->{_expc};
+	    $c{'expect'} = expect($c->{_expc}) if defined $c->{_expc};
+	    $c{'method'} = $c->{_meth} if defined $c->{_meth};
+	    #$c{'method'} = $c->{_meth} eq "HEAD" ? JSON::true : JSON::false if defined $c->{_meth};
 	}
 	push @ret,, \%c;
     }
     return [ @ret ];
+}
+
+sub expect {
+    my($expect) = @_;
+    my @expect;
+
+    foreach (split(/\s+/, $expect)) {
+	my @val;
+	
+	if(/([1-9][0-9][0-9])-([1-9][0-9][0-9])$/) {
+	    if($1 > $2) {
+		@val = $2..$1;
+	    } else {
+		@val = $1..$2;
+	    }
+	} else {
+	    die unless /^[1-9][0-9][0-9]$/;
+	    @val = ($_+0);
+	}
+
+	push @expect, @val;
+    }
+    
+    return [ @expect ];
 }
 
 sub policy {
@@ -184,68 +202,62 @@ sub policy {
 	    default { die ref($v) }
 	}
 	
+	my $def = 1;
+	my $tcp = 1;
 	my $port = 0;
-	my $type = "tcp";
+	my $type = "none";
 	
 	if($p =~ /^(.*)\*$/) {	    
 	    $p = $1;
 	    $v->{'checks'} = [];
+	    $def = 0;
 	}
 	
 	given ($p) {
-	    when (/^[1-9][0-9]*$/)       { $port = $p; $type = "tcp"; }
-	    when (m'^([1-9][0-9]*)/udp$') { $port = $1; $type = "udp"; }
-	    when (m'^([1-9][0-9]*)/tcp$') { $port = $1; $type = "tcp"; }
+	    when (/^[1-9][0-9]*$/)        { $port = $p; $type = "syn"; }
+	    when (m'^([1-9][0-9]*)/tcp$') { $port = $1; $type = "syn"; }
+	    when (m'^([1-9][0-9]*)/udp$') { $port = $1; $tcp = 0; }
 	    
 	    when (m'^(([1-9][0-9]*)/|)http$')   { $port = $2 eq '' ? 80  : $2+0; $type = "http"; }
 	    when (m'^(([1-9][0-9]*)/|)https$')  { $port = $2 eq '' ? 443 : $2+0; $type = "https"; }
-	    when (m'^(([1-9][0-9]*)/|)domain$') { $port = $2 eq '' ? 53 :  $2+0; $type = "dns"; }
+	    when (m'^(([1-9][0-9]*)/|)domain$') { $port = $2 eq '' ? 53 :  $2+0; $type = "domain"; }
 	    
-	    when ('dns/tcp')  { $port = 53; $type = "dns/tcp"; } # deprecated (/etc/services)
-	    when ('dns/udp')  { $port = 53; $type = "dns/udp"; } # deprecated (/etc/services)
-	    when ('dns')      { $port = 53; $type = "dns"; }     # deprecated (/etc/services)
-
-	    when ('domain/tcp')  { $port = 53; $type = "dns/tcp"; }
-	    when ('domain/udp')  { $port = 53; $type = "dns/udp"; }
-	    when ('domain')      { $port = 53; $type = "dns"; }
-
-	    when ('ftp')    { $port = 21;  $type = "tcp"; }
-	    when ('smtp')   { $port = 25;  $type = "tcp"; }	    
-	    when ('ssh')    { $port = 22;  $type = "tcp"; }
-	    when ('telnet') { $port = 23;  $type = "tcp"; }
-	    when ('pop2')   { $port = 109; $type = "tcp"; }
-	    when ('pop3')   { $port = 110; $type = "tcp"; }
-	    when ('imap')   { $port = 143; $type = "tcp"; }
-	    when ('imaps')  { $port = 993; $type = "tcp"; }
+	    when ('domain/tcp')  { $port = 53; $type = "dns"; $tcp = 1 }
+	    when ('domain/udp')  { $port = 53; $type = "dns"; $tcp = 0 }
+	    
+	    when ('ftp')    { $port = 21;  $type = "syn"; }
+	    when ('smtp')   { $port = 25;  $type = "syn"; }
+	    when ('ssh')    { $port = 22;  $type = "syn"; }
+	    when ('telnet') { $port = 23;  $type = "syn"; }
+	    when ('pop2')   { $port = 109; $type = "syn"; }
+	    when ('pop3')   { $port = 110; $type = "syn"; }
+	    when ('imap')   { $port = 143; $type = "syn"; }
+	    when ('imaps')  { $port = 993; $type = "syn"; }
 
 	    default { die "policy: $p\n" }
 	}
 
 	$port = int($port)+0;
-	die if $port < 1;
-	
-	given ($type) {
+	die "port: $port\n" if $port < 1 || $port > 65535;
 
-	    when ('dns') {
-		push @policy, checks('dnstcp', 'tcp', $port,  $v, $defaults);
-		push @policy, checks('dns',    'udp', $port,  $v, $defaults);
+	$type = "none" if !$def;
+
+	given ($type) {
+	    when ("domain") {
+		push @policy, service('dns', 1, $port,  $v, $defaults);
+		push @policy, service('dns', 0, $port,  $v, $defaults);
 	    }
-	
 	    
-	    when ('dns/tcp') { push @policy, checks('dns', 'tcp', $port,  $v, $defaults) }
-	    when ('dns/udp') { push @policy, checks('dns', 'udp', $port,  $v, $defaults) }
-	    
-	    when ('udp') { push @policy, checks($type, 'udp', $port,  $v, $defaults) }
-	    default      { push @policy, checks($type, 'tcp', $port,  $v, $defaults) }
-	    
+	    default { push @policy, service($type, $tcp, $port,  $v, $defaults) }
 	}
     }
 
     return @policy;
 }
 
-sub checks() {
-    my($type, $protocol, $port, $policy, $defaults) = @_;
+sub service() {
+    my($type, $tcp, $port, $policy, $defaults) = @_;
+    my $protocol = $tcp ? "tcp" : "udp";
 
     my %defaults = %$defaults if defined $defaults;
     
@@ -256,8 +268,8 @@ sub checks() {
 
     my @checks = @{$policy->{'checks'}} if defined $policy->{'checks'};
 
-    my $chks = !(exists $policy->{'checks'} && scalar(@checks) == 0);
-    
+    #my $chks = !(exists $policy->{'checks'} && scalar(@checks) == 0);
+    my $chks = 1;
     
     return {
 	_prot => $protocol,
@@ -269,81 +281,81 @@ sub checks() {
 	_name => key($policy, 'name',        $defaults->{_name}),
 	_desc => key($policy, 'description', $defaults->{_desc}),
 	_bind => key($policy, 'bind',        $port)+0,
+	_chks => [ checks($tcp, $port, $type, $policy, \%defaults, @checks) ],
 	
-	_chks => $chks ? [ check($protocol, $port, $type, $policy, \%defaults, @checks) ] : [],
+	#_chks => $chks ? [ checks($tcp, $port, $type, $policy, \%defaults, @checks) ] : [],
     };
 }
 
-sub check() {
-    my($protocol, $port, $type, $policy, $defaults, @checks) = @_;
+sub checks() {
+    my($tcp, $port, $type, $policy, $defaults, @checks) = @_;
     my %d = %$defaults;
     my @c;
 
-    
     if(scalar(@checks) == 0) {
-	# defaults
-
-	my $http = {
-	    _type => $type,
-	    _host => $d{_host},
-	    _path => $d{_path},
-	    _meth => $d{_meth},
-	    _expc => $d{_expc},
-	    _port => 0,
-	};
-
 	given ($type) {
-	    when ('http')  { push @c, $http }
-	    when ('https') { push @c, $http }
-	    when ('dnstcp') { push @c, { _type => 'dns', _meth => JSON::true } }
-	    #when ('dnstcp') { push @c, { _type => 'dnstcp' } }	    
-	    when ('dns')   {
-		given ($protocol) {
-		    when ('udp') { push @c, { _type => 'dns' } }
-		    when ('tcp') { push @c, { _type => 'dnstcp' } }
-		    #when ('tcp') { push @c, { _type => 'syn' }, { _type => 'dns' } }
-		}
+	    when ('none') { }
+	    when (/^http|htts$/)  {
+		push @c, {
+		    _type => $type,
+		    _host => $d{_host},
+		    _path => $d{_path},
+		    _meth => $d{_meth},
+		    _expc => $d{_expc},
+		};
 	    }
-	    when ('tcp') { push @c, { _type => 'syn' } }	    
-	    default {
-		push @c, {_type => 'syn' } if $protocol eq 'tcp';
+	    
+	    when('dns') {
+		my $meth = $d{_meth};
+		$meth = $defaults->{_meth} if !defined $meth && defined $defaults->{_meth};
+		$meth = $tcp ? "tcp" : "udp" if (!defined $meth || $meth !~ /^(tcp|udp)$/i );
+		
+		push @c, {
+		    _type => $type,
+		    _meth => $meth,
+		};
 	    }
+	    
+	    when ('syn')   { push @c, { _type => $type } }
+
+	    default { die "$type\n" } 
 	}
     } else {
 	foreach my $c (@checks) {
-	    my $test = $c->{'type'};
-
-	    if(!defined $test) {
-		$test = $type;
-		
-
-		given($test) {
-		    when("http") {}
-		    when("https") {}
-		    when("dns") {}
-		    when("dnsudp") { $test = "dns" }
-		    when("dnstcp") { $test = "dnstcp" }		
-		    when("tcp") { $test = "syn" }
-		    default { die "no default test type defined for '$test'\n" }
+	    my $type = $c->{"type"};
+	    my $port = key($c, 'port',   0)+0;
+	    
+	    given ($type) {
+		when (/^http|htts$/)  {
+		    push @c, {
+			_type => $type,
+			_host => key($c, 'host',   $d{_host}),
+			_path => key($c, 'path',   $d{_path}),
+			_meth => key($c, 'method', $d{_meth}),
+			_expc => key($c, 'expect', $d{_expc}),
+			_port => $port,
+		    };
 		}
+		
+		when ('dns') {
+		    my $meth = $c->{"method"};
+		    $meth = $defaults->{_meth} if !defined $meth && defined $defaults->{_meth};
+		    $meth = undef unless $meth =~ /^(tcp|udp)$/;
+		    $meth = $tcp ? "tcp" : "udp" unless defined $meth;
+		    push @c, {
+			_type => $type,
+			_meth => $meth,
+			_port => $port,
+		    };
+		}
+		
+		when ('syn') { push @c, { _type => $type, _port => $port  } }
+
+		default { die "$type\n" } 		
 	    }
-
-	    die "uknown test type '$test'\n" unless $test =~ /^(http|https|dns|dnstcp|dnsudp|syn)$/;
-
-	    $test = "dns" if $test eq "dnsudp";
-	    
-	    push @c, {
-	        _type => $test,
-		_host => key($c, 'host',   $d{_host}),
-		_path => key($c, 'path',   $d{_path}),
-		_meth => key($c, 'method', $d{_meth}),
-		_expc => key($c, 'expect', $d{_expc}),
-		_port => key($c, 'port',   0)+0,
-	    };
-	    
 	}
     }
-
+    
     return @c;
 }
 
@@ -355,7 +367,7 @@ sub key {
     return undef unless defined $ret;
 
     die "Name '$ret' isn't valid\n" if $k eq 'name' && $ret !~ /^[a-z0-9][-a-z0-9]*$/i;
-    die "Expect '$ret' isn't valid\n" if $k eq 'expect' && $ret !~ /^[1-9][0-9][0-9]$/;
+    #die "Expect '$ret' isn't valid\n" if $k eq 'expect' && $ret !~ /^[1-9][0-9][0-9]$/;
     die "Method '$ret' isn't valid\n" if $k eq 'method' && $ret !~ /^(HEAD|GET)$/;        
     
     return $ret;
@@ -421,3 +433,79 @@ sub params {
     $p{'med'} = $o->{'med'}+0 if defined $o->{'med'};
     return \%p;
 }
+
+
+
+
+# sub check() {
+#     my($protocol, $port, $type, $policy, $defaults, @checks) = @_;
+#     my %d = %$defaults;
+#     my @c;
+
+    
+#     if(scalar(@checks) == 0) {
+# 	# defaults
+
+# 	my $http = {
+# 	    _type => $type,
+# 	    _host => $d{_host},
+# 	    _path => $d{_path},
+# 	    _meth => $d{_meth},
+# 	    _expc => $d{_expc},
+# 	    _port => 0,
+# 	};
+
+# 	given ($type) {
+# 	    when ('http')  { push @c, $http }
+# 	    when ('https') { push @c, $http }
+# 	    when ('dnstcp') { push @c, { _type => 'dns', _meth => JSON::true } }
+# 	    #when ('dnstcp') { push @c, { _type => 'dnstcp' } }	    
+# 	    when ('dns')   {
+# 		given ($protocol) {
+# 		    when ('udp') { push @c, { _type => 'dns' } }
+# 		    when ('tcp') { push @c, { _type => 'dnstcp' } }
+# 		    #when ('tcp') { push @c, { _type => 'syn' }, { _type => 'dns' } }
+# 		}
+# 	    }
+# 	    when ('tcp') { push @c, { _type => 'syn' } }	    
+# 	    default {
+# 		push @c, {_type => 'syn' } if $protocol eq 'tcp';
+# 	    }
+# 	}
+#     } else {
+# 	foreach my $c (@checks) {
+# 	    my $test = $c->{'type'};
+
+# 	    if(!defined $test) {
+# 		$test = $type;
+		
+
+# 		given($test) {
+# 		    when("http") {}
+# 		    when("https") {}
+# 		    when("dns") {}
+# 		    when("dnsudp") { $test = "dns" }
+# 		    when("dnstcp") { $test = "dnstcp" }		
+# 		    when("tcp") { $test = "syn" }
+# 		    default { die "no default test type defined for '$test'\n" }
+# 		}
+# 	    }
+
+# 	    die "uknown test type '$test'\n" unless $test =~ /^(http|https|dns|dnstcp|dnsudp|syn)$/;
+
+# 	    $test = "dns" if $test eq "dnsudp";
+	    
+# 	    push @c, {
+# 	        _type => $test,
+# 		_host => key($c, 'host',   $d{_host}),
+# 		_path => key($c, 'path',   $d{_path}),
+# 		_meth => key($c, 'method', $d{_meth}),
+# 		_expc => key($c, 'expect', $d{_expc}),
+# 		_port => key($c, 'port',   0)+0,
+# 	    };
+	    
+# 	}
+#     }
+
+#     return @c;
+# }
