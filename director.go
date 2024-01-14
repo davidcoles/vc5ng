@@ -22,10 +22,10 @@ type Service struct {
 	Port     uint16
 	Protocol uint8
 
-	Sticky        bool
-	Required      uint8
-	Available     uint8
-	Destinations  map[IPPort]Destination
+	Sticky    bool
+	Required  uint8
+	Available uint8
+	//_Destinations map[IPPort]Destination
 	Destinations_ []Destination
 }
 
@@ -68,7 +68,7 @@ func (i IPPort) MarshalText() ([]byte, error) {
 type Check = mon.Check
 type Target = map[Tuple]Service
 
-func ServiceKey(addr netip.Addr, port uint16, protocol uint8) Tuple {
+func SxxerviceKey(addr netip.Addr, port uint16, protocol uint8) Tuple {
 	return Tuple{Addr: addr, Port: port, Protocol: protocol}
 }
 
@@ -198,11 +198,11 @@ func (d *Director) Configure(cf []Service) error {
 			return errors.New("Only TCP and UDP protocols supported")
 		}
 
-		for ip, _ := range svc.Destinations {
-			if ip.Port == 0 {
-				return errors.New("Destination port cannot be 0")
-			}
-		}
+		//for ip, _ := range svc._Destinations {
+		//	if ip.Port == 0 {
+		//		return errors.New("Destination port cannot be 0")
+		//	}
+		//}
 
 		for _, d := range svc.Destinations_ {
 			if d.Port == 0 {
@@ -225,11 +225,11 @@ func (d *Director) Configure(cf []Service) error {
 		// 2: true  && !false => true
 		// 3: true  && !true  => false
 
-		for ip, r := range svc.Destinations {
-			d := mon.Destination{Address: ip.Addr, Port: ip.Port}
-			i := mon.Instance{Service: s, Destination: d}
-			services[i] = mon.Target{Init: init, Checks: r.Checks}
-		}
+		//for ip, r := range svc._Destinations {
+		//	d := mon.Destination{Address: ip.Addr, Port: ip.Port}
+		//	i := mon.Instance{Service: s, Destination: d}
+		//	services[i] = mon.Target{Init: init, Checks: r.Checks}
+		//}
 
 		for _, d := range svc.Destinations_ {
 			i := mon.Instance{Service: s, Destination: mon.Destination{Address: d.Address, Port: d.Port}}
@@ -283,14 +283,12 @@ func clone(in []Service) (out []Service) {
 	for _, s := range in {
 		c := s
 
-		c.Destinations = map[IPPort]Destination{}
-
-		for k, v := range s.Destinations {
-			c.Destinations[k] = v
-		}
+		//c._Destinations = map[IPPort]Destination{}
+		//for k, v := range s._Destinations {
+		//	c._Destinations[k] = v
+		//}
 
 		c.Destinations_ = nil
-
 		for _, d := range s.Destinations_ {
 			c.Destinations_ = append(c.Destinations_, d)
 		}
@@ -307,12 +305,12 @@ func (d *Director) services() map[Tuple]Service {
 	for ipp, svc := range d.cfg {
 
 		service := Service{
-			Address:      ipp.Addr,
-			Port:         ipp.Port,
-			Protocol:     ipp.Protocol,
-			Destinations: map[IPPort]Destination{},
-			Required:     svc.Required,
-			Sticky:       svc.Sticky,
+			Address:  ipp.Addr,
+			Port:     ipp.Port,
+			Protocol: ipp.Protocol,
+			//_Destinations: map[IPPort]Destination{},
+			Required: svc.Required,
+			Sticky:   svc.Sticky,
 		}
 
 		sv := mon.Service{Address: ipp.Addr, Port: ipp.Port, Protocol: ipp.Protocol}
@@ -354,8 +352,8 @@ func (d *Director) services() map[Tuple]Service {
 
 			service.Destinations_ = append(service.Destinations_, destination)
 
-			ap := IPPort{Addr: destination.Address, Port: destination.Port}
-			service.Destinations[ap] = destination
+			//ap := IPPort{Addr: destination.Address, Port: destination.Port}
+			//service._Destinations[ap] = destination
 		}
 
 		service.Available = available

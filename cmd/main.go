@@ -690,22 +690,24 @@ func serviceStatus(config *Config, client *Client, director *vc5ng.Director, _st
 			current += d.Stats.Current
 		}
 
-		for addr, dst := range svc.Destinations {
-			s, _ := xvs[addr.Addr]
+		//for addr, dst := range svc.Destinations {
+		for _, dst := range svc.Destinations_ {
+			//s, _ := xvs[addr.Addr]
+			s, _ := xvs[dst.Address]
 
 			dest := Dest{
-				Address:    addr.Addr,
-				Port:       addr.Port,
+				Address:    dst.Address,
+				Port:       dst.Port,
 				Disabled:   dst.Disabled,
 				Up:         dst.Status.OK,
 				For:        uint64(time.Now().Sub(dst.Status.When) / time.Millisecond),
 				Took:       uint64(dst.Status.Took / time.Millisecond),
 				Diagnostic: dst.Status.Diagnostic,
 				Weight:     dst.Weight,
-				MAC:        mac[addr.Addr],
+				MAC:        mac[dst.Address],
 			}
 
-			key := Key{VIP: svc.Address, RIP: addr.Addr, Port: svc.Port, Protocol: svc.Protocol}
+			key := Key{VIP: svc.Address, RIP: dst.Address, Port: svc.Port, Protocol: svc.Protocol}
 			stats[key] = dest.Stats.xvs(s, _stats[key])
 
 			serv.Destinations = append(serv.Destinations, dest)

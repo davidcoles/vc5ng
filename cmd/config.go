@@ -329,12 +329,12 @@ func (cfg services) parse() []vc5ng.Service {
 	for ipp, svc := range cfg {
 
 		service := vc5ng.Service{
-			Address:      ipp.Addr,
-			Port:         ipp.Port,
-			Protocol:     ipp.Protocol,
-			Destinations: map[vc5ng.IPPort]vc5ng.Destination{},
-			Required:     svc.Need,
-			Sticky:       svc.Sticky,
+			Address:  ipp.Addr,
+			Port:     ipp.Port,
+			Protocol: ipp.Protocol,
+			//Destinations: map[vc5ng.IPPort]vc5ng.Destination{},
+			Required: svc.Need,
+			Sticky:   svc.Sticky,
 		}
 
 		for ap, dst := range svc.Destinations {
@@ -359,6 +359,7 @@ func (cfg services) parse() []vc5ng.Service {
 	return services
 }
 
+/*
 func (cfg services) _parse() map[vc5ng.Tuple]vc5ng.Service {
 
 	services := map[vc5ng.Tuple]vc5ng.Service{}
@@ -390,6 +391,7 @@ func (cfg services) _parse() map[vc5ng.Tuple]vc5ng.Service {
 
 	return services
 }
+*/
 
 type protocol uint8
 
