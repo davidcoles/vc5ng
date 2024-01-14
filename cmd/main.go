@@ -690,19 +690,19 @@ func serviceStatus(config *Config, client *Client, director *vc5ng.Director, _st
 			current += d.Stats.Current
 		}
 
-		//for addr, dst := range svc.Destinations {
-		for _, dst := range svc.Destinations_ {
-			//s, _ := xvs[addr.Addr]
+		for _, dst := range svc.Destinations {
 			s, _ := xvs[dst.Address]
+
+			status := dst.Status
 
 			dest := Dest{
 				Address:    dst.Address,
 				Port:       dst.Port,
 				Disabled:   dst.Disabled,
-				Up:         dst.Status.OK,
-				For:        uint64(time.Now().Sub(dst.Status.When) / time.Millisecond),
-				Took:       uint64(dst.Status.Took / time.Millisecond),
-				Diagnostic: dst.Status.Diagnostic,
+				Up:         status.OK,
+				For:        uint64(time.Now().Sub(status.When) / time.Millisecond),
+				Took:       uint64(status.Took / time.Millisecond),
+				Diagnostic: status.Diagnostic,
 				Weight:     dst.Weight,
 				MAC:        mac[dst.Address],
 			}
