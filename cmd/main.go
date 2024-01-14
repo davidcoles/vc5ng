@@ -113,7 +113,8 @@ func main() {
 
 	done := make(chan bool)
 
-	rib := director.RIB()
+	//rib := director.RIB()
+	rib := RIB(director)
 
 	var summary Summary
 
@@ -159,7 +160,8 @@ func main() {
 				var out []netip.Addr
 
 				// VIP needs to be up for at least 5 seconds to be advertised
-				for _, ip := range director.RIB() {
+				//for _, ip := range director.RIB() {
+				for _, ip := range RIB(director) {
 					if t, exists := old[ip]; exists {
 						if now.Sub(t) > (5 * time.Second) {
 							out = append(out, ip)
@@ -717,4 +719,29 @@ func serviceStatus(config *Config, client *Client, director *vc5ng.Director, _st
 	}
 
 	return status, stats, state, current
+}
+
+func RIB(d *vc5ng.Director) (rib []netip.Addr) {
+
+	vips := map[netip.Addr]bool{}
+
+	for _, s := range d.Status() {
+		vip := s.Address
+
+		if s.Healthy() {
+			if _, ok := vips[vip]; !ok {
+				vips[vip] = true
+			}
+		} else {
+			vips[vip] = false
+		}
+	}
+
+	for ip, ok := range vips {
+		if ok {
+			rib = append(rib, ip)
+		}
+	}
+
+	return rib
 }

@@ -45,7 +45,7 @@ func (b *Balancer) Probe(vip netip.Addr, rip netip.Addr, check vc5ng.Check) (boo
 
 func evaluate(services []vc5ng.Service) bool {
 	for _, s := range services {
-		for d, _ := range s.Destinations {
+		for _, d := range s.Destinations_ {
 			if s.Port != d.Port {
 				return false
 			}
@@ -69,10 +69,10 @@ func (b *Balancer) Synchronise(target vc5ng.Target) {
 
 		var dsts []xvs.Destination
 
-		for ipp, d := range s.Destinations {
-			if ipp.Port == s.Port {
+		for _, d := range s.Destinations_ {
+			if d.Port == s.Port {
 				dsts = append(dsts, xvs.Destination{
-					Address: ipp.Addr,
+					Address: d.Address,
 					Weight:  d.HealthyWeight(),
 				})
 			}

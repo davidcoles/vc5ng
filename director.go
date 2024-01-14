@@ -22,13 +22,16 @@ type Service struct {
 	Port     uint16
 	Protocol uint8
 
-	Sticky       bool
-	Required     uint8
-	Available    uint8
-	Destinations map[IPPort]Destination
+	Sticky        bool
+	Required      uint8
+	Available     uint8
+	Destinations  map[IPPort]Destination
+	Destinations_ []Destination
 }
 
 type Destination struct {
+	Address  netip.Addr `json:"address"`
+	Port     uint16     `json:"port"`
 	Disabled bool       `json:"disabled"`
 	Weight   uint8      `json:"weight"`
 	Status   mon.Status `json:"status"`
@@ -81,6 +84,10 @@ func (p protocol) MarshalText() ([]byte, error) {
 	return []byte("Unknown"), nil
 }
 
+func (s *Service) Healthy() bool {
+	return s.Available >= s.Required
+}
+
 func (i Service) Less(j Service) bool {
 	if r := i.Address.Compare(j.Address); r != 0 {
 		return r < 0
@@ -127,7 +134,8 @@ func (d *Director) balancer() Balancer {
 	return b
 }
 
-func (d *Director) Start(ip netip.Addr, cfg map[Tuple]Service) (err error) {
+// func (d *Director) Start(ip netip.Addr, cfg map[Tuple]Service) (err error) {
+func (d *Director) Start(ip netip.Addr, cfg []Service) (err error) {
 
 	d.C = make(chan bool, 1)
 
@@ -157,9 +165,18 @@ func (d *Director) Stop() {
 	close(d.die)
 }
 
-func (d *Director) Configure(cfg map[Tuple]Service) error {
+// func (d *Director) Configure(cfg map[Tuple]Service) error {
+func (d *Director) Configure(cf []Service) error {
 	d.mutex.Lock()
 	defer d.mutex.Unlock()
+
+	cfg := map[Tuple]Service{}
+
+	//var cf []Service
+	for _, s := range cf {
+		t := Tuple{Addr: s.Address, Port: s.Port, Protocol: s.Protocol}
+		cfg[t] = s
+	}
 
 	vips := map[netip.Addr]bool{}
 	svcs := map[mon.Service]bool{}
@@ -186,6 +203,12 @@ func (d *Director) Configure(cfg map[Tuple]Service) error {
 				return errors.New("Destination port cannot be 0")
 			}
 		}
+
+		for _, d := range svc.Destinations_ {
+			if d.Port == 0 {
+				return errors.New("Destination port cannot be 0")
+			}
+		}
 	}
 
 	for ipp, svc := range cfg {
@@ -206,6 +229,11 @@ func (d *Director) Configure(cfg map[Tuple]Service) error {
 			d := mon.Destination{Address: ip.Addr, Port: ip.Port}
 			i := mon.Instance{Service: s, Destination: d}
 			services[i] = mon.Target{Init: init, Checks: r.Checks}
+		}
+
+		for _, d := range svc.Destinations_ {
+			i := mon.Instance{Service: s, Destination: mon.Destination{Address: d.Address, Port: d.Port}}
+			services[i] = mon.Target{Init: init, Checks: d.Checks}
 		}
 	}
 
@@ -261,6 +289,12 @@ func clone(in []Service) (out []Service) {
 			c.Destinations[k] = v
 		}
 
+		c.Destinations_ = nil
+
+		for _, d := range s.Destinations_ {
+			c.Destinations_ = append(c.Destinations_, d)
+		}
+
 		out = append(out, c)
 	}
 
@@ -285,22 +319,42 @@ func (d *Director) services() map[Tuple]Service {
 
 		var available uint8
 
-		for ap, dst := range svc.Destinations {
+		/*
+			for ap, dst := range svc.Destinations {
 
-			ds := mon.Destination{Address: ap.Addr, Port: ap.Port}
+				ds := mon.Destination{Address: ap.Addr, Port: ap.Port}
+
+				status, _ := d.mon.Status(sv, ds)
+
+				destination := Destination{
+					Weight:   dst.Weight,
+					Disabled: dst.Disabled,
+					Status:   status,
+				}
+
+				if destination.HealthyWeight() > 0 {
+					available++
+				}
+
+				service.Destinations[ap] = destination
+			}
+		*/
+
+		for _, destination := range svc.Destinations_ {
+
+			ds := mon.Destination{Address: destination.Address, Port: destination.Port}
 
 			status, _ := d.mon.Status(sv, ds)
 
-			destination := Destination{
-				Weight:   dst.Weight,
-				Disabled: dst.Disabled,
-				Status:   status,
-			}
+			destination.Status = status
 
 			if destination.HealthyWeight() > 0 {
 				available++
 			}
 
+			service.Destinations_ = append(service.Destinations_, destination)
+
+			ap := IPPort{Addr: destination.Address, Port: destination.Port}
 			service.Destinations[ap] = destination
 		}
 

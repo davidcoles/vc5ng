@@ -322,7 +322,44 @@ func (p *Prefix) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-func (cfg services) parse() map[vc5ng.Tuple]vc5ng.Service {
+func (cfg services) parse() []vc5ng.Service {
+
+	var services []vc5ng.Service
+
+	for ipp, svc := range cfg {
+
+		service := vc5ng.Service{
+			Address:      ipp.Addr,
+			Port:         ipp.Port,
+			Protocol:     ipp.Protocol,
+			Destinations: map[vc5ng.IPPort]vc5ng.Destination{},
+			Required:     svc.Need,
+			Sticky:       svc.Sticky,
+		}
+
+		for ap, dst := range svc.Destinations {
+
+			destination := vc5ng.Destination{
+				Address:  ap.Addr,
+				Port:     ap.Port,
+				Weight:   dst.Weight,
+				Disabled: dst.Disabled,
+				Checks:   append([]mon.Check{}, dst.Checks...),
+			}
+
+			//service.Destinations[vc5ng.IPPort{Addr: ap.Addr, Port: ap.Port}] = destination
+			service.Destinations_ = append(service.Destinations_, destination)
+
+		}
+
+		//services[vc5ng.Tuple{Addr: ipp.Addr, Port: ipp.Port, Protocol: ipp.Protocol}] = service
+		services = append(services, service)
+	}
+
+	return services
+}
+
+func (cfg services) _parse() map[vc5ng.Tuple]vc5ng.Service {
 
 	services := map[vc5ng.Tuple]vc5ng.Service{}
 

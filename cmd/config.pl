@@ -38,7 +38,9 @@ sub services {
     my($scheduler, $services, $defaults, $servers, $policy) = @_;
     my %defaults = %$defaults;
     my %out;
-	
+
+    my %disabled;
+    
     foreach my $s (@$services) {
 
 	$defaults{_host} = key($s, 'host',        undef); # checks
@@ -91,6 +93,12 @@ sub services {
 	my @policy = policy(\%policy, \%defaults);
 
 	foreach my $v (@virtual) {
+
+	    if($v =~ /^(.*)\*$/) {
+		$v = $1;
+		$disabled{$v} = 1;
+	    }
+	    
 	    foreach my $p (@policy) {
 		my $l4 = $p->{_prot} . ':' . $p->{_port};
 		my @p = %$p;
@@ -128,6 +136,11 @@ sub services {
 	    }
 	}
     }
+
+    foreach(keys %out) {
+	$out{$_}->{'disabled'} = $TRUE if /^([^:]+):/ && $disabled{$1};
+    }
+    
     return \%out;
 }
 
