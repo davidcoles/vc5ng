@@ -101,15 +101,21 @@ func main() {
 	af_unix := unix(socket.Name())
 
 	director := &vc5ng.Director{
+		Address: addr,
 		Balancer: &balancer.Balancer{
 			Client: client,
-			ProbeFn: func(addr netip.Addr, check mon.Check) (bool, string) {
+			ProbeFunc: func(addr netip.Addr, check mon.Check) (bool, string) {
 				return probe(af_unix, addr, check)
 			},
 		},
 	}
 
-	director.Start(addr, config.Services.parse())
+	//err = director.Start(addr, config.Services.parse())
+	err = director.Start(config.Services.parse())
+
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	done := make(chan bool)
 
@@ -657,7 +663,9 @@ func serviceStatus(config *Config, client *Client, director *vc5ng.Director, _st
 		t := Tuple{Addr: svc.Address, Port: svc.Port, Protocol: svc.Protocol}
 		cnf, _ := config.Services[t]
 
-		up := svc.Available >= svc.Required
+		available := svc.Available()
+
+		up := available >= svc.Required
 
 		if s, exists := _state[t]; !exists || s.up != up {
 			state[t] = State{up: up, time: time.Now()}
@@ -672,7 +680,7 @@ func serviceStatus(config *Config, client *Client, director *vc5ng.Director, _st
 			Port:        svc.Port,
 			Protocol:    protocol(svc.Protocol),
 			Required:    svc.Required,
-			Available:   svc.Available,
+			Available:   available,
 			Up:          up,
 			For:         uint64(time.Now().Sub(state[t].time) / time.Millisecond),
 		}

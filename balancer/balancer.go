@@ -1,6 +1,7 @@
 package balancer
 
 import (
+	"errors"
 	"net/netip"
 
 	"github.com/davidcoles/vc5ng"
@@ -9,9 +10,15 @@ import (
 
 type Client = xvs.Client
 
+type tuple struct {
+	addr netip.Addr
+	port uint16
+	prot uint8
+}
+
 type Balancer struct {
-	Client  *Client
-	ProbeFn func(addr netip.Addr, check vc5ng.Check) (bool, string)
+	Client    *Client
+	ProbeFunc func(addr netip.Addr, check vc5ng.Check) (bool, string)
 }
 
 func (b *Balancer) Available(s vc5ng.Service) (available uint16) {
@@ -30,7 +37,9 @@ func (b *Balancer) Available(s vc5ng.Service) (available uint16) {
 
 func (b *Balancer) Probe(vip netip.Addr, rip netip.Addr, check vc5ng.Check) (bool, string) {
 
-	if b.ProbeFn == nil {
+	f := b.ProbeFunc
+
+	if f == nil {
 		return false, "No probe function defined"
 	}
 
@@ -40,20 +49,52 @@ func (b *Balancer) Probe(vip netip.Addr, rip netip.Addr, check vc5ng.Check) (boo
 		return false, "No NAT destination defined for " + vip.String() + "/" + rip.String()
 	}
 
-	return b.ProbeFn(nat, check)
+	return f(nat, check)
 }
 
-func evaluate(services []vc5ng.Service) bool {
+func (b *Balancer) Configure(services []vc5ng.Service) error {
+
+	target := map[tuple]vc5ng.Service{}
+
 	for _, s := range services {
+		target[tuple{addr: s.Address, port: s.Port, prot: s.Protocol}] = s
+
 		for _, d := range s.Destinations {
 			if s.Port != d.Port {
-				return false
+				return errors.New("Destination ports must match service ports for DSR")
 			}
 		}
 	}
-	return true
+
+	svcs, _ := b.Client.Services()
+	for _, s := range svcs {
+		key := tuple{addr: s.Service.Address, port: s.Service.Port, prot: s.Service.Protocol}
+		if _, wanted := target[key]; !wanted {
+			b.Client.RemoveService(s.Service)
+		}
+	}
+
+	for _, s := range target {
+		service := xvs.Service{Address: s.Address, Port: s.Port, Protocol: xvs.Protocol(s.Protocol), Sticky: s.Sticky}
+
+		var dsts []xvs.Destination
+
+		for _, d := range s.Destinations {
+			if d.Port == s.Port {
+				dsts = append(dsts, xvs.Destination{
+					Address: d.Address,
+					Weight:  d.HealthyWeight(),
+				})
+			}
+		}
+
+		b.Client.SetService(service, dsts)
+	}
+
+	return nil
 }
 
+/*
 func (b *Balancer) Synchronise(target vc5ng.Target) {
 
 	svcs, _ := b.Client.Services()
@@ -81,3 +122,4 @@ func (b *Balancer) Synchronise(target vc5ng.Target) {
 		b.Client.SetService(service, dsts)
 	}
 }
+*/

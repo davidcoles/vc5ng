@@ -2,7 +2,6 @@ package vc5ng
 
 import (
 	"errors"
-	"fmt"
 	"net/netip"
 	"sort"
 	"sync"
@@ -15,63 +14,49 @@ const (
 	UDP = 0x11
 )
 
-type Prober = mon.Prober
+type Check = mon.Check
 
 type Service struct {
-	Address  netip.Addr
-	Port     uint16
-	Protocol uint8
-
+	Address      netip.Addr
+	Port         uint16
+	Protocol     uint8
 	Sticky       bool
 	Required     uint8
-	Available    uint8
 	Destinations []Destination
+	available    uint8
 }
 
 type Destination struct {
-	Address  netip.Addr `json:"address"`
-	Port     uint16     `json:"port"`
-	Disabled bool       `json:"disabled"`
-	Weight   uint8      `json:"weight"`
-	Status   mon.Status `json:"status"`
-	Checks   []mon.Check
+	Address  netip.Addr  `json:"address"`
+	Port     uint16      `json:"port"`
+	Disabled bool        `json:"disabled"`
+	Weight   uint8       `json:"weight"`
+	Status   mon.Status  `json:"status"`
+	Checks   []mon.Check `json:"checks"`
 }
 
+type Balancer interface {
+	Configure([]Service) error
+}
+
+type protocol uint8
+type tuple struct {
+	Addr     netip.Addr
+	Port     uint16
+	Protocol uint8
+}
+
+type nilBalancer struct{}
+
+func (b *nilBalancer) Configure([]Service) error { return nil }
+
+// If the destination is healthy then this function returns its weight. If unhealthy or disabled, zero is returned
 func (d *Destination) HealthyWeight() uint8 {
 	if !d.Disabled && d.Status.OK && d.Weight > 0 {
 		return 1
 	}
 	return 0
 }
-
-func DestinationKey(addr netip.Addr, port uint16) IPPort {
-	return IPPort{Addr: addr, Port: port}
-}
-
-type Tuple = IPPortProtocol
-type IPPortProtocol struct {
-	Addr     netip.Addr
-	Port     uint16
-	Protocol uint8
-}
-
-type IPPort struct {
-	Addr netip.Addr
-	Port uint16
-}
-
-func (i IPPort) MarshalText() ([]byte, error) {
-	return []byte(fmt.Sprintf("%s:%d", i.Addr, i.Port)), nil
-}
-
-type Check = mon.Check
-type Target = map[Tuple]Service
-
-func ServiceKey(addr netip.Addr, port uint16, protocol uint8) Tuple {
-	return Tuple{Addr: addr, Port: port, Protocol: protocol}
-}
-
-type protocol uint8
 
 func (p protocol) MarshalText() ([]byte, error) {
 	switch p {
@@ -84,10 +69,10 @@ func (p protocol) MarshalText() ([]byte, error) {
 }
 
 func (s *Service) Healthy() bool {
-	return s.Available >= s.Required
+	return s.available >= s.Required
 }
 
-func (i Service) Less(j Service) bool {
+func (i Service) less(j Service) bool {
 	if r := i.Address.Compare(j.Address); r != 0 {
 		return r < 0
 	}
@@ -103,44 +88,30 @@ func (i Service) Less(j Service) bool {
 	return false
 }
 
-type Balancer interface {
-	Synchronise(map[Tuple]Service)
-	Available(Service) uint16
-}
-
 type Director struct {
-	C        chan bool
+	// A channel which may be used to receive notifications of changes in status of backend servers.
+	C chan bool
+
+	// The Balancer which will implement the services managed by this Director.
 	Balancer Balancer
-	prober   Prober
-	mutex    sync.Mutex
-	cfg      map[Tuple]Service
-	mon      *mon.Mon
-	die      chan bool
+
+	// Default IP address to use for network probes (optional).
+	Address netip.Addr
+
+	prober mon.Prober
+	mutex  sync.Mutex
+	cfg    map[tuple]Service
+	mon    *mon.Mon
+	die    chan bool
 }
 
-type NilBalancer struct{}
-
-func (b *NilBalancer) Synchronise(map[Tuple]Service) {}
-func (b *NilBalancer) Available(Service) uint16      { return 0 }
-
-func (d *Director) balancer() Balancer {
-	b := d.Balancer
-
-	if b == nil {
-		return &NilBalancer{}
-	}
-
-	return b
-}
-
-// func (d *Director) Start(ip netip.Addr, cfg map[Tuple]Service) (err error) {
-func (d *Director) Start(ip netip.Addr, cfg []Service) (err error) {
+func (d *Director) Start(cfg []Service) (err error) {
 
 	d.C = make(chan bool, 1)
 
-	prober, _ := d.balancer().(Prober)
+	prober, _ := d.balancer().(mon.Prober)
 
-	d.mon, err = mon.New(ip, nil, prober)
+	d.mon, err = mon.New(d.Address, nil, prober)
 
 	if err != nil {
 		return err
@@ -164,16 +135,14 @@ func (d *Director) Stop() {
 	close(d.die)
 }
 
-// func (d *Director) Configure(cfg map[Tuple]Service) error {
-func (d *Director) Configure(cf []Service) error {
+func (d *Director) Configure(config []Service) error {
 	d.mutex.Lock()
 	defer d.mutex.Unlock()
 
-	cfg := map[Tuple]Service{}
+	cfg := map[tuple]Service{}
 
-	//var cf []Service
-	for _, s := range cf {
-		t := Tuple{Addr: s.Address, Port: s.Port, Protocol: s.Protocol}
+	for _, s := range config {
+		t := tuple{Addr: s.Address, Port: s.Port, Protocol: s.Protocol}
 		cfg[t] = s
 	}
 
@@ -228,7 +197,8 @@ func (d *Director) Configure(cf []Service) error {
 
 	// balancer update should return a bool/error value to inidcate if the config was acceptable
 	// only do d.cfg = cfg if it was
-	d.balancer().Synchronise(d.services())
+	//d.balancer().Synchronise(d.services())
+	d.balancer().Configure(config)
 	d.mon.Update(services)
 	d.inform()
 
@@ -244,10 +214,8 @@ func (d *Director) RIB() (rib []netip.Addr) {
 	for _, svc := range d.services() {
 		vip := svc.Address
 
-		av := d.Balancer.Available(svc)
-
-		//fmt.Println(vip, svc.Available, svc.Required, av)
-		if svc.Available >= svc.Required && av >= uint16(svc.Required) {
+		//if svc.available >= svc.Required && d.Balancer.Available(svc) >= uint16(svc.Required) {
+		if svc.available >= svc.Required {
 			if _, ok := vips[vip]; !ok {
 				vips[vip] = true
 			}
@@ -281,8 +249,8 @@ func clone(in []Service) (out []Service) {
 	return out
 }
 
-func (d *Director) services() map[Tuple]Service {
-	services := map[Tuple]Service{}
+func (d *Director) services() map[tuple]Service {
+	services := map[tuple]Service{}
 
 	for ipp, svc := range d.cfg {
 
@@ -313,10 +281,25 @@ func (d *Director) services() map[Tuple]Service {
 			service.Destinations = append(service.Destinations, destination)
 		}
 
-		service.Available = available
+		service.available = available
 
 		services[ipp] = service
 	}
+
+	return services
+}
+
+func (s *Service) Available() uint8 {
+	return s.available
+}
+
+func (d *Director) status() (services []Service) {
+
+	for _, s := range d.services() {
+		services = append(services, s)
+	}
+
+	sort.SliceStable(services, func(i, j int) bool { return services[i].less(services[j]) })
 
 	return services
 }
@@ -325,11 +308,13 @@ func (d *Director) Status() (services []Service) {
 	d.mutex.Lock()
 	defer d.mutex.Unlock()
 
+	return d.status()
+
 	for _, s := range d.services() {
 		services = append(services, s)
 	}
 
-	sort.SliceStable(services, func(i, j int) bool { return services[i].Less(services[j]) })
+	sort.SliceStable(services, func(i, j int) bool { return services[i].less(services[j]) })
 
 	return services
 }
@@ -338,7 +323,8 @@ func (d *Director) update() {
 	d.mutex.Lock()
 	defer d.mutex.Unlock()
 
-	d.balancer().Synchronise(d.services())
+	//d.balancer().Synchronise(d.services())
+	d.balancer().Configure(d.status())
 	d.inform()
 }
 
@@ -361,4 +347,14 @@ func (d *Director) background() {
 			return
 		}
 	}
+}
+
+func (d *Director) balancer() Balancer {
+	b := d.Balancer
+
+	if b == nil {
+		return &nilBalancer{}
+	}
+
+	return b
 }

@@ -16,6 +16,11 @@ import (
 	"github.com/davidcoles/vc5ng/mon"
 )
 
+const (
+	TCP = 0x06
+	UDP = 0x11
+)
+
 type Real struct {
 	Checks   []mon.Check `json:"checks,omitempty"`
 	Disabled bool        `json:"disabled,omitempty"`
@@ -172,14 +177,14 @@ func (i *ipport) UnmarshalText(data []byte) error {
 
 /**********************************************************************/
 
-type Tuple = IPPortProtocol
-type IPPortProtocol struct {
+// type Tuple = IPPortProtocol
+type Tuple struct {
 	Addr     netip.Addr
 	Port     uint16
 	Protocol uint8
 }
 
-func (i *IPPortProtocol) Compare(j *IPPortProtocol) (r int) {
+func (i *Tuple) Compare(j *Tuple) (r int) {
 	if r = i.Addr.Compare(j.Addr); r != 0 {
 		return r
 	}
@@ -203,8 +208,8 @@ func (i *IPPortProtocol) Compare(j *IPPortProtocol) (r int) {
 	return 0
 }
 
-func (i *IPPortProtocol) MarshalJSON() ([]byte, error) {
-	text, err := i.MarshalText()
+func (t *Tuple) MarshalJSON() ([]byte, error) {
+	text, err := t.MarshalText()
 
 	if err != nil {
 		return nil, err
@@ -213,7 +218,7 @@ func (i *IPPortProtocol) MarshalJSON() ([]byte, error) {
 	return []byte(`"` + string(text) + `"`), nil
 }
 
-func (i *IPPortProtocol) UnmarshalJSON(data []byte) error {
+func (t *Tuple) UnmarshalJSON(data []byte) error {
 
 	l := len(data)
 
@@ -221,26 +226,26 @@ func (i *IPPortProtocol) UnmarshalJSON(data []byte) error {
 		return errors.New("Badly formed ip:port")
 	}
 
-	return i.UnmarshalText(data[1 : l-1])
+	return t.UnmarshalText(data[1 : l-1])
 }
 
-func (i IPPortProtocol) MarshalText() ([]byte, error) {
+func (t Tuple) MarshalText() ([]byte, error) {
 
 	var p string
 
-	switch i.Protocol {
-	case 6:
+	switch t.Protocol {
+	case TCP:
 		p = "tcp"
-	case 17:
+	case UDP:
 		p = "udp"
 	default:
 		return nil, errors.New("Invalid protocol")
 	}
 
-	return []byte(fmt.Sprintf("%s:%d:%s", i.Addr, i.Port, p)), nil
+	return []byte(fmt.Sprintf("%s:%d:%s", t.Addr, t.Port, p)), nil
 }
 
-func (i *IPPortProtocol) UnmarshalText(data []byte) error {
+func (t *Tuple) UnmarshalText(data []byte) error {
 
 	text := string(data)
 
@@ -262,7 +267,7 @@ func (i *IPPortProtocol) UnmarshalText(data []byte) error {
 		return errors.New("Badly formed ip:port:protocol - IP " + text)
 	}
 
-	i.Addr = ip
+	t.Addr = ip
 
 	port, err := strconv.Atoi(m[2])
 	if err != nil {
@@ -273,13 +278,13 @@ func (i *IPPortProtocol) UnmarshalText(data []byte) error {
 		return errors.New("Badly formed ip:port:protocol, port out of rance 0-65535 - " + text)
 	}
 
-	i.Port = uint16(port)
+	t.Port = uint16(port)
 
 	switch m[3] {
 	case "tcp":
-		i.Protocol = 6
+		t.Protocol = TCP
 	case "udp":
-		i.Protocol = 17
+		t.Protocol = UDP
 	default:
 		return errors.New("Badly formed ip:port:protocol, tcp/udp - " + text)
 	}
@@ -363,9 +368,9 @@ type protocol uint8
 
 func (p protocol) MarshalText() ([]byte, error) {
 	switch p {
-	case 6:
+	case TCP:
 		return []byte("tcp"), nil
-	case 17:
+	case UDP:
 		return []byte("udp"), nil
 	}
 	return nil, errors.New("Invalid protocol")
