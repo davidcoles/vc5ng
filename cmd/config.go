@@ -375,3 +375,13 @@ func (p protocol) MarshalText() ([]byte, error) {
 	}
 	return nil, errors.New("Invalid protocol")
 }
+
+func (p protocol) string() string {
+	switch p {
+	case TCP:
+		return "tcp"
+	case UDP:
+		return "udp"
+	}
+	return "xxx"
+}

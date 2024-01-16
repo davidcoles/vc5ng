@@ -18,16 +18,15 @@ import (
 	"os/exec"
 	"os/signal"
 	"sort"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
 
-	"github.com/davidcoles/xvs"
-
 	"github.com/davidcoles/vc5ng"
-	//"github.com/davidcoles/vc5ng/balancer"
 	"github.com/davidcoles/vc5ng/bgp"
 	"github.com/davidcoles/vc5ng/mon"
+	"github.com/davidcoles/xvs"
 )
 
 //go:embed static/*
@@ -37,6 +36,8 @@ type Client = xvs.Client
 
 func main() {
 	var mutex sync.Mutex
+
+	start := time.Now()
 
 	sock := flag.String("s", "", "socket")
 	native := flag.Bool("n", false, "Native mode XDP")
@@ -118,6 +119,7 @@ func main() {
 	done := make(chan bool)
 
 	rib := director.RIB()
+	vip := map[netip.Addr]State{}
 
 	var summary Summary
 
@@ -129,6 +131,7 @@ func main() {
 		for {
 			mutex.Lock()
 			summary.xvs(client.Info(), summary)
+			summary.Uptime = uint64(time.Now().Sub(start) / time.Second)
 			services, old, serviceState, summary.Current = serviceStatus(config, client, director, old, serviceState)
 			mutex.Unlock()
 			select {
@@ -155,6 +158,36 @@ func main() {
 			case <-timer.C:
 				fmt.Println("STARTS")
 				init = true
+			}
+
+			{
+				rib := map[netip.Addr]bool{}
+				new := map[netip.Addr]State{}
+
+				for _, v := range director.RIB() {
+					rib[v] = true
+				}
+
+				for _, s := range director.Status() {
+					v := s.Address
+
+					if o, ok := vip[v]; ok {
+						up, _ := rib[v]
+
+						if o.up != up {
+							new[v] = State{up: up, time: time.Now()}
+						} else {
+							new[v] = o
+						}
+
+					} else {
+						new[v] = State{up: rib[v], time: time.Now()}
+					}
+				}
+
+				mutex.Lock()
+				vip = new
+				mutex.Unlock()
 			}
 
 			if init {
@@ -253,6 +286,15 @@ func main() {
 		w.Write([]byte("\n"))
 	})
 
+	http.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
+
+		mutex.Lock()
+		metrics := prometheus(services, summary, vip)
+		mutex.Unlock()
+
+		w.Header().Set("Content-Type", "text/plain")
+		w.Write([]byte(strings.Join(metrics, "\n") + "\n"))
+	})
 	http.HandleFunc("/stats.json", func(w http.ResponseWriter, r *http.Request) {
 		type status struct {
 			Services map[VIP][]Serv        `json:"services"`
@@ -478,82 +520,6 @@ func unix(socket string) *http.Client {
 	}
 }
 
-/**********************************************************************/
-// Stats
-/**********************************************************************/
-
-type Serv struct {
-	Name         string     `json:"name,omitempty"`
-	Description  string     `json:"description"`
-	Address      netip.Addr `json:"address"`
-	Port         uint16     `json:"port"`
-	Protocol     protocol   `json:"protocol"`
-	Required     uint8      `json:"required"`
-	Available    uint8      `json:"available"`
-	Stats        Stats      `json:"stats"`
-	Destinations []Dest     `json:"destinations,omitempty"`
-	Up           bool       `json:"up"`
-	For          uint64     `json:"for"`
-	Last         uint64     `json:"last"`
-}
-
-type Dest struct {
-	Address    netip.Addr `json:"address"`
-	Port       uint16     `json:"port"`
-	Stats      Stats      `json:"stats"`
-	Weight     uint8      `json:"weight"`
-	Disabled   bool       `json:"disabled"`
-	Up         bool       `json:"up"`
-	For        uint64     `json:"for"`
-	Took       uint64     `json:"took"`
-	When       uint64     `json:"when"`
-	Last       uint64     `json:"last"`
-	Diagnostic string     `json:"diagnostic"`
-	MAC        string     `json:"mac"`
-}
-
-type Key struct {
-	VIP      netip.Addr
-	RIP      netip.Addr
-	Port     uint16
-	Protocol uint8
-}
-
-type State struct {
-	up   bool
-	time time.Time
-}
-
-type Stats struct {
-	Octets           uint64 `json:"octets"`
-	Packets          uint64 `json:"packets"`
-	Flows            uint64 `json:"flows"`
-	Current          uint64 `json:"current"`
-	OctetsPerSecond  uint64 `json:"octets_per_second"`
-	PacketsPerSecond uint64 `json:"packets_per_second"`
-	FlowsPerSecond   uint64 `json:"flows_per_second"`
-	time             time.Time
-}
-
-type Summary struct {
-	Latency            uint64 `json:"latency_ns"`
-	Dropped            uint64 `json:"dropped"`
-	Blocked            uint64 `json:"blocked"`
-	NotQueued          uint64 `json:"notqueued"`
-	DroppedPerSecond   uint64 `json:"dropped_per_second"`
-	BlockedPerSecond   uint64 `json:"blocked_per_second"`
-	NotQueuedPerSecond uint64 `json:"notqueued_per_second"`
-
-	Octets           uint64 `json:"octets"`
-	Packets          uint64 `json:"packets"`
-	Flows            uint64 `json:"flows"`
-	Current          uint64 `json:"current"`
-	OctetsPerSecond  uint64 `json:"octets_per_second"`
-	PacketsPerSecond uint64 `json:"packets_per_second"`
-	FlowsPerSecond   uint64 `json:"flows_per_second"`
-	time             time.Time
-}
-
 func (s *Stats) xvs(x xvs.Stats, y Stats) Stats {
 	s.Octets = x.Octets
 	s.Packets = x.Packets
@@ -572,16 +538,6 @@ func (s *Stats) xvs(x xvs.Stats, y Stats) Stats {
 	}
 
 	return *s
-}
-
-func (s *Stats) add(x Stats) {
-	s.Octets += x.Octets
-	s.Packets += x.Packets
-	s.Flows += x.Flows
-	s.Current += x.Current
-	s.OctetsPerSecond += x.OctetsPerSecond
-	s.PacketsPerSecond += x.PacketsPerSecond
-	s.FlowsPerSecond += x.FlowsPerSecond
 }
 
 func (s *Summary) xvs(x xvs.Info, y Summary) Summary {
@@ -678,7 +634,7 @@ func serviceStatus(config *Config, client *Client, director *vc5ng.Director, _st
 			Required:    svc.Required,
 			Available:   available,
 			Up:          up,
-			For:         uint64(time.Now().Sub(state[t].time) / time.Millisecond),
+			For:         uint64(time.Now().Sub(state[t].time) / time.Second),
 		}
 
 		key := Key{VIP: svc.Address, Port: svc.Port, Protocol: svc.Protocol}
@@ -704,7 +660,7 @@ func serviceStatus(config *Config, client *Client, director *vc5ng.Director, _st
 				Port:       dst.Port,
 				Disabled:   dst.Disabled,
 				Up:         status.OK,
-				For:        uint64(time.Now().Sub(status.When) / time.Millisecond),
+				For:        uint64(time.Now().Sub(status.When) / time.Second),
 				Took:       uint64(status.Took / time.Millisecond),
 				Diagnostic: status.Diagnostic,
 				Weight:     dst.Weight,

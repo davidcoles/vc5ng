@@ -1,6 +1,6 @@
 # vc5ng
 
-A library to manage load balancer services. The load balancer is
+A library to manage load balanced services. The balancer is
 implemented by an interface passed to the `Director`, and configured
 with a list of services which include health check definitions.
 

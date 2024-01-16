@@ -236,7 +236,7 @@ function serv(v, _vip, list, up) {
 
 	tr = append(t, "tr", null, s.available >= s.required ? "up" : "dn")
 	append(tr, "th", s.address+":"+s.port+":"+s.protocol)
-	append(tr, "th",  dhms(s.for/1000) + " " + (s.up ? "UP" : "DOWN"))
+	append(tr, "th",  dhms(s.for) + " " + (s.up ? "UP" : "DOWN"))
 	append(tr, "th", tsf(s.stats.octets_per_second*8)+"bits/s")
 	append(tr, "th", tsf(s.stats.packets_per_second)+"packets/s")
 	append(tr, "th", tsf(s.stats.flows_per_second)+"conns/s")
@@ -251,7 +251,7 @@ function serv(v, _vip, list, up) {
 
 	    var status = document.createElement("span")
             status.setAttribute("title", "Last check: " + d.diagnostic)
-	    status.innerHTML =  dhms(d.for/1000) + " " + (d.up ? "UP" : "DOWN") + " ("+d.took+"ms)"
+	    status.innerHTML =  dhms(d.for) + " " + (d.up ? "UP" : "DOWN") + " ("+d.took+"ms)"
 
 	    var tr = append(t, "tr", null, c)
 	    append(tr, "td").appendChild(address)
