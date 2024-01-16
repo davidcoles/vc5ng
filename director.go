@@ -1,3 +1,21 @@
+/*
+ * VC5 load balancer. Copyright (C) 2021-present David Coles
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
+
 package vc5ng
 
 import (
@@ -15,11 +33,13 @@ const (
 )
 
 type Check = mon.Check
+type Scheduler = uint8
 
 type Service struct {
 	Address      netip.Addr
 	Port         uint16
 	Protocol     uint8
+	Scheduler    Scheduler //TODO
 	Sticky       bool
 	Required     uint8
 	Destinations []Destination
@@ -68,6 +88,10 @@ func (p protocol) MarshalText() ([]byte, error) {
 	return []byte("Unknown"), nil
 }
 
+func (s *Service) Available() uint8 {
+	return s.available
+}
+
 func (s *Service) Healthy() bool {
 	return s.available >= s.Required
 }
@@ -95,7 +119,7 @@ type Director struct {
 	// The Balancer which will implement the services managed by this Director.
 	Balancer Balancer
 
-	// Default IP address to use for network probes (optional).
+	// Default IP address to use for network probes (needed for SYN, should be optional).
 	Address netip.Addr
 
 	prober mon.Prober
@@ -149,7 +173,7 @@ func (d *Director) Configure(config []Service) error {
 	vips := map[netip.Addr]bool{}
 	svcs := map[mon.Service]bool{}
 
-	// scan previous config to see if vip/service existed ...
+	// scan previous config for checks to see if vip/service existed ...
 	for s, _ := range d.cfg {
 		vips[s.Addr] = true
 		svcs[mon.Service{Address: s.Addr, Port: s.Port, Protocol: s.Protocol}] = true
@@ -197,7 +221,6 @@ func (d *Director) Configure(config []Service) error {
 
 	// balancer update should return a bool/error value to inidcate if the config was acceptable
 	// only do d.cfg = cfg if it was
-	//d.balancer().Synchronise(d.services())
 	d.balancer().Configure(config)
 	d.mon.Update(services)
 	d.inform()
@@ -205,17 +228,17 @@ func (d *Director) Configure(config []Service) error {
 	return nil
 }
 
+// Routing Information Base - the list of virtual IP address which are healthy
 func (d *Director) RIB() (rib []netip.Addr) {
 	d.mutex.Lock()
 	defer d.mutex.Unlock()
 
 	vips := map[netip.Addr]bool{}
 
-	for _, svc := range d.services() {
-		vip := svc.Address
+	for _, s := range d.services() {
+		vip := s.Address
 
-		//if svc.available >= svc.Required && d.Balancer.Available(svc) >= uint16(svc.Required) {
-		if svc.available >= svc.Required {
+		if s.Healthy() {
 			if _, ok := vips[vip]; !ok {
 				vips[vip] = true
 			}
@@ -289,10 +312,6 @@ func (d *Director) services() map[tuple]Service {
 	return services
 }
 
-func (s *Service) Available() uint8 {
-	return s.available
-}
-
 func (d *Director) status() (services []Service) {
 
 	for _, s := range d.services() {
@@ -323,7 +342,6 @@ func (d *Director) update() {
 	d.mutex.Lock()
 	defer d.mutex.Unlock()
 
-	//d.balancer().Synchronise(d.services())
 	d.balancer().Configure(d.status())
 	d.inform()
 }

@@ -111,11 +111,14 @@ func New(addr netip.Addr, services map[Instance]Target, p Prober) (*Mon, error) 
 		m.prober = prober{m: m}
 	}
 
-	var err error
-	m.syn, err = Syn(addr, false)
+	var nul netip.Addr
+	if addr != nul {
+		var err error
+		m.syn, err = Syn(addr, false)
 
-	if m.syn == nil {
-		return nil, err
+		if m.syn == nil {
+			return nil, err
+		}
 	}
 
 	m.Update(services)
@@ -264,7 +267,7 @@ func (m *Mon) monitor(vip, rip netip.Addr, port uint16, state *state, c Checks) 
 
 type Checks = []Check
 type Check struct {
-	//Type string `json:"type,omitempty"`
+	// Type of check; http, https, syn, dns
 	Type string `json:"type,omitempty"`
 
 	// TCP/UDP port to use for L4/L7 checks
@@ -382,7 +385,13 @@ func (m *Mon) SYN(addr netip.Addr, port uint16) (bool, string) {
 
 	ip := addr.As4()
 
-	return m.syn.Check(ip, port)
+	syn := m.syn
+
+	if syn == nil {
+		return false, "No SYN server"
+	}
+
+	return syn.Check(ip, port)
 }
 
 func (m *Mon) HTTP(addr netip.Addr, port uint16, https bool, head bool, host, path string, expect ...int) (bool, string) {

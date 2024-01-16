@@ -25,7 +25,7 @@ import (
 	"github.com/davidcoles/xvs"
 
 	"github.com/davidcoles/vc5ng"
-	"github.com/davidcoles/vc5ng/balancer"
+	//"github.com/davidcoles/vc5ng/balancer"
 	"github.com/davidcoles/vc5ng/bgp"
 	"github.com/davidcoles/vc5ng/mon"
 )
@@ -33,7 +33,7 @@ import (
 //go:embed static/*
 var STATIC embed.FS
 
-type Client = balancer.Client
+type Client = xvs.Client
 
 func main() {
 	var mutex sync.Mutex
@@ -101,8 +101,7 @@ func main() {
 	af_unix := unix(socket.Name())
 
 	director := &vc5ng.Director{
-		Address: addr,
-		Balancer: &balancer.Balancer{
+		Balancer: &Balancer{
 			Client: client,
 			ProbeFunc: func(addr netip.Addr, check mon.Check) (bool, string) {
 				return probe(af_unix, addr, check)
@@ -110,7 +109,6 @@ func main() {
 		},
 	}
 
-	//err = director.Start(addr, config.Services.parse())
 	err = director.Start(config.Services.parse())
 
 	if err != nil {
@@ -119,8 +117,7 @@ func main() {
 
 	done := make(chan bool)
 
-	//rib := director.RIB()
-	rib := RIB(director)
+	rib := director.RIB()
 
 	var summary Summary
 
@@ -166,8 +163,7 @@ func main() {
 				var out []netip.Addr
 
 				// VIP needs to be up for at least 5 seconds to be advertised
-				//for _, ip := range director.RIB() {
-				for _, ip := range RIB(director) {
+				for _, ip := range director.RIB() {
 					if t, exists := old[ip]; exists {
 						if now.Sub(t) > (5 * time.Second) {
 							out = append(out, ip)
@@ -729,29 +725,4 @@ func serviceStatus(config *Config, client *Client, director *vc5ng.Director, _st
 	}
 
 	return status, stats, state, current
-}
-
-func RIB(d *vc5ng.Director) (rib []netip.Addr) {
-
-	vips := map[netip.Addr]bool{}
-
-	for _, s := range d.Status() {
-		vip := s.Address
-
-		if s.Healthy() {
-			if _, ok := vips[vip]; !ok {
-				vips[vip] = true
-			}
-		} else {
-			vips[vip] = false
-		}
-	}
-
-	for ip, ok := range vips {
-		if ok {
-			rib = append(rib, ip)
-		}
-	}
-
-	return rib
 }

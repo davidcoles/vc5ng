@@ -16,7 +16,7 @@
  * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 
-package balancer
+package main
 
 import (
 	"errors"
@@ -26,8 +26,6 @@ import (
 	"github.com/davidcoles/xvs"
 )
 
-type Client = xvs.Client
-
 type tuple struct {
 	addr netip.Addr
 	port uint16
@@ -35,7 +33,7 @@ type tuple struct {
 }
 
 type Balancer struct {
-	Client    *Client
+	Client    *xvs.Client
 	ProbeFunc func(addr netip.Addr, check vc5ng.Check) (bool, string)
 }
 
