@@ -299,7 +299,7 @@ func main() {
 		type status struct {
 			Services map[VIP][]Serv        `json:"services"`
 			Summary  Summary               `json:"summary"`
-			VIP      []Foo                 `json:"vip"`
+			VIP      []VIPStats            `json:"vip"`
 			BGP      map[string]bgp.Status `json:"bgp"`
 			RIB      []netip.Addr          `json:"rib"`
 		}
@@ -567,13 +567,14 @@ func (s *Summary) xvs(x xvs.Info, y Summary) Summary {
 	return *s
 }
 
-type Foo struct {
+type VIP = netip.Addr
+type VIPStats struct {
 	VIP   VIP   `json:"vip"`
 	Up    bool  `json:"up"`
 	Stats Stats `json:"stats"`
 }
 
-func vipStatus(in map[VIP][]Serv, rib []netip.Addr) (out []Foo) {
+func vipStatus(in map[VIP][]Serv, rib []netip.Addr) (out []VIPStats) {
 
 	foo := map[VIP]bool{}
 
@@ -587,7 +588,7 @@ func vipStatus(in map[VIP][]Serv, rib []netip.Addr) (out []Foo) {
 			stats.add(s.Stats)
 		}
 
-		out = append(out, Foo{VIP: vip, Stats: stats, Up: foo[vip]})
+		out = append(out, VIPStats{VIP: vip, Stats: stats, Up: foo[vip]})
 	}
 
 	sort.SliceStable(out, func(i, j int) bool {
@@ -596,8 +597,6 @@ func vipStatus(in map[VIP][]Serv, rib []netip.Addr) (out []Foo) {
 
 	return
 }
-
-type VIP = netip.Addr
 
 func serviceStatus(config *Config, client *Client, director *vc5ng.Director, _stats map[Key]Stats, _state map[Tuple]State) (map[VIP][]Serv, map[Key]Stats, map[Tuple]State, uint64) {
 
