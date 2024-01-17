@@ -24,6 +24,7 @@ import (
 	"sort"
 	"sync"
 
+	"github.com/davidcoles/vc5ng/log"
 	"github.com/davidcoles/vc5ng/mon"
 )
 
@@ -122,6 +123,8 @@ type Director struct {
 	// Default IP address to use for network probes (needed for SYN, should be optional).
 	Address netip.Addr
 
+	Logger log.Log
+
 	prober mon.Prober
 	mutex  sync.Mutex
 	cfg    map[tuple]Service
@@ -135,7 +138,7 @@ func (d *Director) Start(cfg []Service) (err error) {
 
 	prober, _ := d.balancer().(mon.Prober)
 
-	d.mon, err = mon.New(d.Address, nil, prober)
+	d.mon, err = mon.New(d.Address, nil, prober, d.Logger)
 
 	if err != nil {
 		return err
@@ -221,9 +224,20 @@ func (d *Director) Configure(config []Service) error {
 
 	// balancer update should return a bool/error value to inidcate if the config was acceptable
 	// only do d.cfg = cfg if it was
-	d.balancer().Configure(config)
+	//d.balancer().Configure(config)
+	//d.mon.Update(services)
+	//d.inform()
+
 	d.mon.Update(services)
-	d.inform()
+	d.update()
+
+	// TODO
+	// save old monitring config
+	// build new monitoring config
+	// apply new monitoring
+	// apply new config to balancer
+	// if not rejected persist blancer + monitoring
+	// if rejected, restore old monitoring
 
 	return nil
 }
@@ -339,8 +353,8 @@ func (d *Director) Status() (services []Service) {
 }
 
 func (d *Director) update() {
-	d.mutex.Lock()
-	defer d.mutex.Unlock()
+	//d.mutex.Lock()
+	//defer d.mutex.Unlock()
 
 	d.balancer().Configure(d.status())
 	d.inform()
@@ -353,11 +367,23 @@ func (d *Director) inform() {
 	}
 }
 
+func (d *Director) log() log.Log {
+	l := d.Logger
+
+	if l != nil {
+		return l
+	}
+
+	return log.Nil{}
+}
+
 func (d *Director) background() {
 	for {
 		select {
 		case <-d.mon.C:
+			d.mutex.Lock()
 			d.update()
+			d.mutex.Unlock()
 		case <-d.die:
 			d.Configure(nil)
 			d.mon.Update(nil)

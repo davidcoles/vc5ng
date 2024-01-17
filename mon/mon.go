@@ -28,7 +28,11 @@ import (
 	"net/netip"
 	"sync"
 	"time"
+
+	"github.com/davidcoles/vc5ng/log"
 )
+
+const F = "MONITOR"
 
 var client *http.Client
 
@@ -101,11 +105,22 @@ type Mon struct {
 	services map[Instance]*state
 	syn      *SYN
 	prober   Prober
+	logger   log.Log
 }
 
-func New(addr netip.Addr, services map[Instance]Target, p Prober) (*Mon, error) {
+func (m *Mon) log() log.Log {
+	l := m.logger
 
-	m := &Mon{C: make(chan bool, 1), services: make(map[Instance]*state), prober: p}
+	if l != nil {
+		return l
+	}
+
+	return log.Nil{}
+}
+
+func New(addr netip.Addr, services map[Instance]Target, p Prober, l log.Log) (*Mon, error) {
+
+	m := &Mon{C: make(chan bool, 1), services: make(map[Instance]*state), prober: p, logger: l}
 
 	if m.prober == nil {
 		m.prober = prober{m: m}
@@ -180,11 +195,12 @@ func (m *Mon) Update(checks map[Instance]Target) {
 	}
 }
 
-// need to add some sort of history, 4-out-of-5 or something
-// start with service ok:  history[1 1 1 1 0]
-// rotate to: history[1 1 1 0 x]
-// first check either keeps service ok, or marks it as down
-// once down then all last 5 checks need to pass to bring back up
+func updown(b bool) string {
+	if b {
+		return "up"
+	}
+	return "down"
+}
 
 func (m *Mon) monitor(vip, rip netip.Addr, port uint16, state *state, c Checks) chan Checks {
 	C := make(chan Checks, 10)
@@ -239,6 +255,12 @@ func (m *Mon) monitor(vip, rip netip.Addr, port uint16, state *state, c Checks) 
 
 				var changed bool
 				if !was.Initialised || was.OK != now.OK {
+					//m.log().Println(vip, rip, port, "went", now.OK)
+					if was.Initialised {
+						m.log().INFO(F, vip, rip, port, "went", updown(now.OK))
+					} else {
+						m.log().INFO(F, vip, rip, port, "starting as", updown(now.OK))
+					}
 					changed = true
 					now.When = t
 				}

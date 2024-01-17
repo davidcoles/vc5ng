@@ -12,8 +12,11 @@ virtual IP address to the network.
 
 [A sample application](cmd/) is included which uses an [XDP/eBPF load
 balancer implementation](https://github.com/davidcoles/xvs) to provide
-a layer 2 Direct Server Return (DSR) service.
+a layer 2 Direct Server Return service.
 
+
+Godoc can be found at
+[https://pkg.go.dev/github.com/davidcoles/vc5ng](https://pkg.go.dev/github.com/davidcoles/vc5ng)
 
 
 
