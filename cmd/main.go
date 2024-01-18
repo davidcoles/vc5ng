@@ -36,6 +36,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -56,7 +57,7 @@ func main() {
 	var mutex sync.Mutex
 
 	start := time.Now()
-	logger := logger{}
+	logs := &logger{}
 
 	sock := flag.String("s", "", "socket")
 	native := flag.Bool("n", false, "Native mode XDP")
@@ -102,7 +103,7 @@ func main() {
 		Native:     *native,
 		VLANs:      config.VLANs(),
 		NAT:        true,
-		Logger:     logger,
+		Logger:     logs,
 	}
 
 	err = client.Start()
@@ -122,7 +123,7 @@ func main() {
 	af_unix := unix(socket.Name())
 
 	director := &vc5ng.Director{
-		Logger: logger,
+		Logger: logs,
 		Balancer: &Balancer{
 			Client: client,
 			ProbeFunc: func(addr netip.Addr, check mon.Check) (bool, string) {
@@ -247,6 +248,20 @@ func main() {
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		r.URL.Path = "static/" + r.URL.Path
 		http.FileServer(static).ServeHTTP(w, r)
+	})
+
+	http.HandleFunc("/log/", func(w http.ResponseWriter, r *http.Request) {
+
+		start, _ := strconv.ParseUint(r.URL.Path[5:], 10, 64)
+
+		w.Header().Set("Content-Type", "application/json")
+
+		logs := logs.get(index(start))
+
+		js, _ := json.MarshalIndent(&logs, " ", " ")
+
+		w.Write(js)
+		w.Write([]byte("\n"))
 	})
 
 	http.HandleFunc("/prefixes.json", func(w http.ResponseWriter, r *http.Request) {
@@ -469,7 +484,7 @@ func netns(socket string, addr netip.Addr) {
 		}
 	}()
 
-	monitor, err := mon.New(addr, nil, nil, logger{})
+	monitor, err := mon.New(addr, nil, nil, &logger{})
 
 	if err != nil {
 		log.Fatal(err)

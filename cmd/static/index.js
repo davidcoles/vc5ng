@@ -270,7 +270,7 @@ function serv(v, _vip, list, up) {
 
 
 
-var lastms = 0;
+var lastlog = 0;
 
 function lb() {
     
@@ -282,7 +282,7 @@ function lb() {
     console.log(url)
     function refresh() {
 	updateStats(url);
-	//updateLogs(log);
+	updateLogs(log);
 	setTimeout(refresh, 2000);
     }
 
@@ -306,17 +306,17 @@ function addMessage(msg) {
 
 function updateLogs(url) {
 
-    getJSON(url+lastms, function(err, data) {
+    getJSON(url+lastlog, function(err, data) {
         if (err !== null) {
             //alert('Something went wrong: ' + err);
         } else {
             data.forEach(function(item, index) {
                 //console.log(index);
                 //if(item.Level < 7) {
-                    lastms = item.Ms;
-                    var date = new Date(lastms);
+                    lastlog = item.indx;
+                    var date = new Date(item.time*1000);
                     var time = date.toLocaleString();
-                    addMessage(time + ": " + item.Text);
+                    addMessage(time + ": " + item.text);
                 //}
             })
         }

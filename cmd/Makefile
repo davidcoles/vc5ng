@@ -1,26 +1,17 @@
-# To use this code as a standalone example:
-# Copy the go file and the Makefile to a new directory
-# Initialise a go module in the new directory
-# (eg.: go mod init balancer && go mod tidy)
-# Run make. Done.
-
-# If you already have libbpf installed elsewhere on your system then,
-# after inialsing the moudule, you can simply:
+# If you already have libbpf installed elsewhere on your system then
+# specify the path like so:
 # CGO_CFLAGS=-I/path/to/libbpf CGO_LDFLAGS=-L/path/to/libbpf go build
 
-#BPFVER ?= v0.6.1
-#BPFVER ?= v0.8.1
 BPFVER ?= v1.3.0
 LIBBPF ?= $(PWD)/libbpf/src
 
-export CGO_CFLAGS  = -I$(LIBBPF)
-export CGO_LDFLAGS = -L$(LIBBPF)
+export CGO_CFLAGS  ?= -I$(LIBBPF)
+export CGO_LDFLAGS ?= -L$(LIBBPF)
 
-default: libbpf/src/libbpf.a balancer
+default: libbpf/src/libbpf.a vc5
 
-balancer: *.go static/*
+vc5: *.go static/*
 	go build -race -o $@
-
 
 config.yaml:
 	cp config.sample.yaml $@
@@ -29,7 +20,7 @@ config.json: config.pl config.yaml
 	./config.pl config.yaml >$@- && mv $@- $@
 
 clean:
-	rm -f balancer config.json
+	rm -f vc5 config.json
 
 distclean: clean
 	rm -rf libbpf
@@ -39,3 +30,6 @@ libbpf:
 
 libbpf/src/libbpf.a: libbpf
 	cd libbpf/src && $(MAKE)
+
+test:
+	if grep '^replace github.com/davidcoles/xvs' go.mod; then false; fi

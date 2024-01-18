@@ -19,7 +19,9 @@
 package main
 
 import (
-	"log"
+	"fmt"
+	"sync"
+	"time"
 )
 
 const (
@@ -33,11 +35,58 @@ const (
 	DEBUG   = 7
 )
 
-type logger struct {
+var mutex sync.Mutex
+
+type entry struct {
+	Indx index  `json:"indx"`
+	Time int64  `json:"time"`
+	Text string `json:"text"`
 }
 
-func (l logger) Println(a ...any) {
-	log.Println(append([]any{"LOGGER"}, a...)...)
+type index = int64
+
+type logger struct {
+	mutex   sync.Mutex
+	history []entry
+	indx    index
+}
+
+func (l *logger) Println(a ...any) {
+	l.mutex.Lock()
+	defer l.mutex.Unlock()
+
+	if l.indx == 0 {
+		// Not using UnixNano here because large integers cause an
+		// overflow in jq(1) which I often use for highlighting JSON
+		// and it confuses me when the numbers are wrong!
+		l.indx = index(time.Now().Unix()) * 1000
+	}
+
+	l.indx++
+
+	l.history = append(l.history, entry{Indx: l.indx, Text: fmt.Sprintln(a...), Time: time.Now().Unix()})
+	for len(l.history) > 1000 {
+		l.history = l.history[1:]
+	}
+}
+
+func (l *logger) get(start index) (s []entry) {
+	l.mutex.Lock()
+	defer l.mutex.Unlock()
+
+	for n := len(l.history) - 1; n > 0; n-- {
+		e := l.history[n]
+		if e.Indx <= start {
+			break
+		}
+		s = append(s, e)
+	}
+
+	for i, j := 0, len(s)-1; i < j; i, j = i+1, j-1 {
+		s[i], s[j] = s[j], s[i]
+	}
+
+	return
 }
 
 func level(l uint8) string {
@@ -50,13 +99,13 @@ func level(l uint8) string {
 	return "XXX"
 }
 
-func (l logger) log(n uint8, s string, a ...any) { l.Println(append([]any{level(n), s}, a...)...) }
+func (l *logger) log(n uint8, s string, a ...any) { l.Println(append([]any{level(n), s}, a...)...) }
 
-func (l logger) EMERG(s string, a ...any)   { l.log(EMERG, s, a...) }
-func (l logger) ALERT(s string, a ...any)   { l.log(ALERT, s, a...) }
-func (l logger) CRIT(s string, a ...any)    { l.log(CRIT, s, a...) }
-func (l logger) ERR(s string, a ...any)     { l.log(ERR, s, a...) }
-func (l logger) WARNING(s string, a ...any) { l.log(WARNING, s, a...) }
-func (l logger) NOTICE(s string, a ...any)  { l.log(NOTICE, s, a...) }
-func (l logger) INFO(s string, a ...any)    { l.log(INFO, s, a...) }
-func (l logger) DEBUG(s string, a ...any)   { l.log(DEBUG, s, a...) }
+func (l *logger) EMERG(s string, a ...any)   { l.log(EMERG, s, a...) }
+func (l *logger) ALERT(s string, a ...any)   { l.log(ALERT, s, a...) }
+func (l *logger) CRIT(s string, a ...any)    { l.log(CRIT, s, a...) }
+func (l *logger) ERR(s string, a ...any)     { l.log(ERR, s, a...) }
+func (l *logger) WARNING(s string, a ...any) { l.log(WARNING, s, a...) }
+func (l *logger) NOTICE(s string, a ...any)  { l.log(NOTICE, s, a...) }
+func (l *logger) INFO(s string, a ...any)    { l.log(INFO, s, a...) }
+func (l *logger) DEBUG(s string, a ...any)   { l.log(DEBUG, s, a...) }
