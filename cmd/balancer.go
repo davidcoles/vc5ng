@@ -34,7 +34,7 @@ type tuple struct {
 
 type Balancer struct {
 	Client    *xvs.Client
-	ProbeFunc func(addr netip.Addr, check vc5ng.Check) (bool, string)
+	ProbeFunc func(vip, rip, nat netip.Addr, check vc5ng.Check) (bool, string)
 }
 
 func (b *Balancer) Probe(vip netip.Addr, rip netip.Addr, check vc5ng.Check) (bool, string) {
@@ -51,7 +51,7 @@ func (b *Balancer) Probe(vip netip.Addr, rip netip.Addr, check vc5ng.Check) (boo
 		return false, "No NAT destination defined for " + vip.String() + "/" + rip.String()
 	}
 
-	return f(nat, check)
+	return f(vip, rip, nat, check)
 }
 
 func (b *Balancer) Configure(services []vc5ng.Service) error {

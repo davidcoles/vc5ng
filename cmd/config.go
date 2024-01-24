@@ -195,7 +195,6 @@ func (i *ipport) UnmarshalText(data []byte) error {
 
 /**********************************************************************/
 
-// type Tuple = IPPortProtocol
 type Tuple struct {
 	Addr     netip.Addr
 	Port     uint16
@@ -355,7 +354,6 @@ func (cfg services) parse() []vc5ng.Service {
 			Address:  ipp.Addr,
 			Port:     ipp.Port,
 			Protocol: ipp.Protocol,
-			//Destinations: map[vc5ng.IPPort]vc5ng.Destination{},
 			Required: svc.Need,
 			Sticky:   svc.Sticky,
 		}
@@ -370,12 +368,10 @@ func (cfg services) parse() []vc5ng.Service {
 				Checks:   append([]mon.Check{}, dst.Checks...),
 			}
 
-			//service.Destinations[vc5ng.IPPort{Addr: ap.Addr, Port: ap.Port}] = destination
 			service.Destinations = append(service.Destinations, destination)
 
 		}
 
-		//services[vc5ng.Tuple{Addr: ipp.Addr, Port: ipp.Port, Protocol: ipp.Protocol}] = service
 		services = append(services, service)
 	}
 
@@ -401,5 +397,5 @@ func (p protocol) string() string {
 	case UDP:
 		return "udp"
 	}
-	return "xxx"
+	return fmt.Sprintf("%d", p)
 }

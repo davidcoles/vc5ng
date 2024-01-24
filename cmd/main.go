@@ -54,11 +54,11 @@ var STATIC embed.FS
 type Client = xvs.Client
 
 func main() {
+	F := "vc5"
+
 	var mutex sync.Mutex
 
 	start := time.Now()
-	logs := &logger{}
-
 	sock := flag.String("s", "", "socket")
 	native := flag.Bool("n", false, "Native mode XDP")
 	redirect := flag.Bool("r", false, "Redirect mode")
@@ -74,9 +74,12 @@ func main() {
 		return
 	}
 
+	logs := &logger{}
+
 	socket, err := ioutil.TempFile("/tmp", "vc5ns")
 
 	if err != nil {
+		logs.EMERG(F, "socket", err)
 		log.Fatal(err)
 	}
 
@@ -87,13 +90,15 @@ func main() {
 	nics := args[2:]
 
 	if !addr.Is4() {
+		logs.EMERG(F, "Address is not IPv4:", addr)
 		log.Fatal("Address is not IPv4: ", addr)
 	}
 
 	config, err := Load(file)
 
 	if err != nil {
-		log.Fatal(err)
+		logs.EMERG(F, "Couldn't load config file:", config, err)
+		log.Fatal("Couldn't load config file:", config, err)
 	}
 
 	client := &Client{
@@ -103,31 +108,32 @@ func main() {
 		Native:     *native,
 		VLANs:      config.VLANs(),
 		NAT:        true,
-		Logger:     logs,
+		Logger:     logs.sub("xvs"),
 	}
 
 	err = client.Start()
 
 	if err != nil {
+		logs.EMERG(F, "Couldn't start client:", err)
 		log.Fatal(err)
 	}
 
-	pool := bgp.NewPool(addr.As4(), config.BGP, nil)
+	pool := bgp.NewPool(addr.As4(), config.BGP, nil, logs.sub("bgp"))
 
 	if pool == nil {
 		log.Fatal("BGP pool fail")
 	}
 
-	go spawn(client.Namespace(), os.Args[0], "-s", socket.Name(), client.NamespaceAddress())
+	go spawn(logs, client.Namespace(), os.Args[0], "-s", socket.Name(), client.NamespaceAddress())
 
 	af_unix := unix(socket.Name())
 
 	director := &vc5ng.Director{
-		Logger: logs,
+		Logger: logs.sub("director"),
 		Balancer: &Balancer{
 			Client: client,
-			ProbeFunc: func(addr netip.Addr, check mon.Check) (bool, string) {
-				return probe(af_unix, addr, check)
+			ProbeFunc: func(vip, rip, nat netip.Addr, check mon.Check) (bool, string) {
+				return probe(af_unix, vip, rip, nat, check, logs)
 			},
 		},
 	}
@@ -135,6 +141,7 @@ func main() {
 	err = director.Start(config.Services.parse())
 
 	if err != nil {
+		logs.EMERG(F, "Couldn't start director:", err)
 		log.Fatal(err)
 	}
 
@@ -190,19 +197,20 @@ func main() {
 					rib[v] = true
 				}
 
-				for _, s := range director.Status() {
-					v := s.Address
+				for _, v := range director.VIPs() {
 
 					if o, ok := vip[v]; ok {
 						up, _ := rib[v]
 
 						if o.up != up {
 							new[v] = State{up: up, time: time.Now()}
+							logs.NOTICE(F, KV{"vip": v, "state": updown(up), "event": "vip"})
 						} else {
 							new[v] = o
 						}
 
 					} else {
+						logs.NOTICE(F, KV{"vip": v, "state": updown(rib[v]), "event": "vip"})
 						new[v] = State{up: rib[v], time: time.Now()}
 					}
 				}
@@ -369,6 +377,7 @@ func main() {
 	for {
 		switch <-sig {
 		case syscall.SIGQUIT:
+			logs.ALERT(F, "QUIT signal received - shutting down")
 			fmt.Println("CLOSING")
 			close(done)
 			pool.Close()
@@ -378,6 +387,7 @@ func main() {
 			fmt.Println("DONE")
 			return
 		case syscall.SIGINT:
+			logs.NOTICE(F, "Reload signal received")
 			conf, err := Load(file)
 			if err == nil {
 				mutex.Lock()
@@ -387,7 +397,7 @@ func main() {
 				pool.Configure(config.BGP)
 				mutex.Unlock()
 			} else {
-				log.Println(err)
+				logs.ALERT(F, "Couldn't load config file:", file, err)
 			}
 		}
 	}
@@ -403,7 +413,7 @@ type reply struct {
 	Diagnostic string `json:"diagnostic"`
 }
 
-func probe(client *http.Client, addr netip.Addr, check mon.Check) (bool, string) {
+func probe(client *http.Client, vip, rip, addr netip.Addr, check mon.Check, l *logger) (bool, string) {
 
 	q := query{Addr: addr.String(), Check: check}
 
@@ -436,12 +446,69 @@ func probe(client *http.Client, addr netip.Addr, check mon.Check) (bool, string)
 		return false, fmt.Sprintf("%d response: %s", resp.StatusCode, r.Diagnostic)
 	}
 
+	type KV = map[string]any
+	//expect := fmt.Sprintf("%v", check.Expect)
+	//method := ""
+
+	kv := KV{
+		"event": "healthcheck",
+		"nat":   addr.String(),
+		"vip":   vip.String(),
+		"rip":   rip.String(),
+		"port":  check.Port,
+		"type":  check.Type,
+		//"method":     method,
+		//"host":       check.Host,
+		//"path":       check.Path,
+		//"expect":     expect,
+		"status":     updown(r.OK),
+		"diagnostic": r.Diagnostic,
+	}
+
+	switch check.Type {
+	case "dns":
+		if check.Method {
+			kv["method"] = "tcp"
+		} else {
+			kv["method"] = "udp"
+		}
+	case "http":
+		fallthrough
+	case "https":
+		if check.Method {
+			kv["method"] = "GET"
+		} else {
+			kv["method"] = "HEAD"
+		}
+
+		if check.Host != "" {
+			kv["host"] = check.Host
+		}
+
+		if check.Path != "" {
+			kv["path"] = check.Path
+		}
+
+		if len(check.Expect) > 0 {
+			kv["expect"] = fmt.Sprintf("%v", check.Expect)
+		}
+	}
+
+	//kv["check"] = check
+
+	if l != nil {
+		l.DEBUG("PROBER", kv)
+	}
+
 	return r.OK, r.Diagnostic
 }
 
 // spawn a server (specified by args) which runs in the network namespace - if it dies then restart it
-func spawn(netns string, args ...string) {
+func spawn(logs *logger, netns string, args ...string) {
+	F := "netns"
 	for {
+		logs.DEBUG(F, "Spawning daemon", args)
+
 		cmd := exec.Command("ip", append([]string{"netns", "exec", netns}, args...)...)
 		_, _ = cmd.StdinPipe()
 		stderr, _ := cmd.StderrPipe()
@@ -450,21 +517,26 @@ func spawn(netns string, args ...string) {
 		reader := func(s string, fh io.ReadCloser) {
 			scanner := bufio.NewScanner(fh)
 			for scanner.Scan() {
-				fmt.Println("NETNS:", s, scanner.Text())
+				//fmt.Println("NETNS:", s, scanner.Text())
+				logs.WARNING(F, s, scanner.Text())
 			}
 		}
 
 		go reader("stderr", stderr)
 
 		if err := cmd.Start(); err != nil {
-			log.Println("Daemon", err)
+			//log.Println("Daemon", err)
+			logs.ERR(F, "Daemon", err)
 		} else {
 			reader("stdout", stdout)
 
 			if err := cmd.Wait(); err != nil {
-				log.Println("Daemon", err)
+				//log.Println("Daemon", err)
+				logs.ERR(F, "Daemon", err)
 			}
 		}
+
+		logs.ERR(F, "Daemon exited")
 
 		time.Sleep(1 * time.Second)
 	}
@@ -484,7 +556,8 @@ func netns(socket string, addr netip.Addr) {
 		}
 	}()
 
-	monitor, err := mon.New(addr, nil, nil, &logger{})
+	//monitor, err := mon.New(addr, nil, nil, &logger{})
+	monitor, err := mon.New(addr, nil, nil, nil)
 
 	if err != nil {
 		log.Fatal(err)
@@ -716,4 +789,11 @@ func serviceStatus(config *Config, client *Client, director *vc5ng.Director, _st
 	}
 
 	return status, stats, state, current
+}
+
+func updown(b bool) string {
+	if b {
+		return "up"
+	}
+	return "down"
 }

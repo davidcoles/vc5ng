@@ -184,38 +184,38 @@ func (d *Director) Configure(config []Service) error {
 
 	services := map[mon.Instance]mon.Target{}
 
-	for ipp, svc := range cfg {
-		if ipp.Port == 0 {
+	for _, s := range cfg {
+		if s.Port == 0 {
 			return errors.New("Service port cannot be 0")
 		}
 
-		if ipp.Protocol != TCP && ipp.Protocol != UDP {
+		if s.Protocol != TCP && s.Protocol != UDP {
 			return errors.New("Only TCP and UDP protocols supported")
 		}
 
-		for _, d := range svc.Destinations {
+		for _, d := range s.Destinations {
 			if d.Port == 0 {
 				return errors.New("Destination port cannot be 0")
 			}
 		}
 	}
 
-	for ipp, svc := range cfg {
+	for _, s := range cfg {
 
-		s := mon.Service{Address: ipp.Addr, Port: ipp.Port, Protocol: ipp.Protocol}
+		service := mon.Service{Address: s.Address, Port: s.Port, Protocol: s.Protocol}
 
 		// When:
 		// 1) adding a new vip, all checks should start as down(false) to prevent routing flaps
 		// 2) adding a new service to an existing vip, start up(true) to prevent vip being withdrawn
 		// 3) adding a new real to an existing service, start as down(false) state to prevent rehash
 
-		init := vips[ipp.Addr] && !svcs[s]
+		init := vips[s.Address] && !svcs[service]
 		// 1: false && ?????? => false
 		// 2: true  && !false => true
 		// 3: true  && !true  => false
 
-		for _, d := range svc.Destinations {
-			i := mon.Instance{Service: s, Destination: mon.Destination{Address: d.Address, Port: d.Port}}
+		for _, d := range s.Destinations {
+			i := mon.Instance{Service: service, Destination: mon.Destination{Address: d.Address, Port: d.Port}}
 			services[i] = mon.Target{Init: init, Checks: d.Checks}
 		}
 	}
@@ -286,55 +286,64 @@ func clone(in []Service) (out []Service) {
 	return out
 }
 
-func (d *Director) services() map[tuple]Service {
-	services := map[tuple]Service{}
+func (d *Director) services() (r []Service) {
 
-	for ipp, svc := range d.cfg {
+	m := d.mon
 
-		service := Service{
-			Address:  ipp.Addr,
-			Port:     ipp.Port,
-			Protocol: ipp.Protocol,
-			Required: svc.Required,
-			Sticky:   svc.Sticky,
-		}
-
-		sv := mon.Service{Address: ipp.Addr, Port: ipp.Port, Protocol: ipp.Protocol}
+	for _, s := range d.cfg {
 
 		var available uint8
+		var destinations []Destination
 
-		for _, destination := range svc.Destinations {
+		for _, d := range s.Destinations {
 
-			ds := mon.Destination{Address: destination.Address, Port: destination.Port}
+			status, _ := m.Status(
+				mon.Service{Address: s.Address, Port: s.Port, Protocol: s.Protocol},
+				mon.Destination{Address: d.Address, Port: d.Port},
+			)
 
-			status, _ := d.mon.Status(sv, ds)
+			d.Status = status
 
-			destination.Status = status
-
-			if destination.HealthyWeight() > 0 {
+			if d.HealthyWeight() > 0 {
 				available++
 			}
 
-			service.Destinations = append(service.Destinations, destination)
+			destinations = append(destinations, d)
 		}
 
-		service.available = available
+		s.Destinations = destinations
+		s.available = available
 
-		services[ipp] = service
+		r = append(r, s)
 	}
 
-	return services
+	return
 }
 
 func (d *Director) status() (services []Service) {
 
-	for _, s := range d.services() {
-		services = append(services, s)
-	}
+	services = d.services()
 
 	sort.SliceStable(services, func(i, j int) bool { return services[i].less(services[j]) })
 
 	return services
+}
+
+func (d *Director) VIPs() (vips []netip.Addr) {
+	d.mutex.Lock()
+	defer d.mutex.Unlock()
+
+	vip := map[netip.Addr]bool{}
+
+	for _, s := range d.status() {
+		vip[s.Address] = true
+	}
+
+	for v, _ := range vip {
+		vips = append(vips, v)
+	}
+
+	return
 }
 
 func (d *Director) Status() (services []Service) {
@@ -342,20 +351,9 @@ func (d *Director) Status() (services []Service) {
 	defer d.mutex.Unlock()
 
 	return d.status()
-
-	for _, s := range d.services() {
-		services = append(services, s)
-	}
-
-	sort.SliceStable(services, func(i, j int) bool { return services[i].less(services[j]) })
-
-	return services
 }
 
 func (d *Director) update() {
-	//d.mutex.Lock()
-	//defer d.mutex.Unlock()
-
 	d.balancer().Configure(d.status())
 	d.inform()
 }

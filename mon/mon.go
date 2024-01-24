@@ -32,7 +32,9 @@ import (
 	"github.com/davidcoles/vc5ng/log"
 )
 
-const F = "MONITOR"
+const F = "mon"
+
+type KV = map[string]any
 
 var client *http.Client
 
@@ -205,6 +207,8 @@ func updown(b bool) string {
 func (m *Mon) monitor(vip, rip netip.Addr, port uint16, state *state, c Checks) chan Checks {
 	C := make(chan Checks, 10)
 
+	m.log().INFO(F, KV{"vip": vip, "rip": rip, "port": port, "event": "start", "state": updown(state.status.OK)})
+
 	go func() {
 
 		history := [5]bool{false, false, false, false, false}
@@ -255,11 +259,8 @@ func (m *Mon) monitor(vip, rip netip.Addr, port uint16, state *state, c Checks) 
 
 				var changed bool
 				if !was.Initialised || was.OK != now.OK {
-					//m.log().Println(vip, rip, port, "went", now.OK)
 					if was.Initialised {
-						m.log().INFO(F, vip, rip, port, "went", updown(now.OK))
-					} else {
-						m.log().INFO(F, vip, rip, port, "starting as", updown(now.OK))
+						m.log().INFO(F, KV{"vip": vip, "rip": rip, "port": port, "event": "state-change", "state": updown(now.OK)})
 					}
 					changed = true
 					now.When = t
@@ -419,10 +420,6 @@ func (m *Mon) SYN(addr netip.Addr, port uint16) (bool, string) {
 func (m *Mon) HTTP(addr netip.Addr, port uint16, https bool, head bool, host, path string, expect ...int) (bool, string) {
 	defer client.CloseIdleConnections()
 
-	if port == 0 {
-		return false, "Port is 0"
-	}
-
 	scheme := "http"
 	method := "GET"
 
@@ -438,10 +435,19 @@ func (m *Mon) HTTP(addr netip.Addr, port uint16, https bool, head bool, host, pa
 		path = path[1:]
 	}
 
+	ex := fmt.Sprintf("%v", expect)
+	kv := KV{"addr": addr.String(), "port": port, "scheme": scheme, "method": method, "host": host, "path": path, "expect": ex}
+
+	if port == 0 {
+		return false, "Port is 0"
+	}
+
 	url := fmt.Sprintf("%s://%s:%d/%s", scheme, addr, port, path)
 	req, err := http.NewRequest(method, url, nil)
 
 	if err != nil {
+		kv["error"] = err.Error()
+		m.log().DEBUG("PROBE", kv)
 		return false, err.Error()
 	}
 
@@ -460,7 +466,7 @@ func (m *Mon) HTTP(addr netip.Addr, port uint16, https bool, head bool, host, pa
 	ioutil.ReadAll(resp.Body)
 
 	if len(expect) == 0 {
-		return resp.StatusCode == 200, resp.Status
+		expect = []int{200}
 	}
 
 	for _, e := range expect {
@@ -468,6 +474,11 @@ func (m *Mon) HTTP(addr netip.Addr, port uint16, https bool, head bool, host, pa
 			return true, resp.Status
 		}
 	}
+
+	kv["code"] = resp.Status
+	kv["error"] = "Invalid status code"
+
+	m.log().DEBUG("PROBE", kv)
 
 	return false, resp.Status
 }

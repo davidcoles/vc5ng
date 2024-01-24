@@ -65,10 +65,11 @@ type Session struct {
 	status Status
 	mutex  sync.Mutex
 	update Update
+	log    logger
 }
 
-func NewSession(id IP, peer string, p Parameters, r []IP) *Session {
-	s := &Session{p: p, r: r, status: Status{State: IDLE}, update: Update{RIB: r, Parameters: p}}
+func NewSession(id IP, peer string, p Parameters, r []IP, l logger) *Session {
+	s := &Session{p: p, r: r, log: l, status: Status{State: IDLE}, update: Update{RIB: r, Parameters: p}}
 	s.c = s.session(id, peer)
 	return s
 
@@ -154,6 +155,7 @@ func (s *Session) update_stats(a, w uint64, d time.Duration, r []string) {
 }
 
 func (s *Session) session(id IP, peer string) chan Update {
+	const F = "session"
 
 	updates := make(chan Update, 10)
 
@@ -169,6 +171,7 @@ func (s *Session) session(id IP, peer string) chan Update {
 		for {
 			select {
 			case <-timer.C:
+				s.log.INFO(F, KV{"event": "connect", "peer": peer})
 				b, n := s.try(id, peer, updates)
 				var e string
 
@@ -177,6 +180,9 @@ func (s *Session) session(id IP, peer string) chan Update {
 					if len(n.data) > 0 {
 						e += " (" + string(n.data) + ")"
 					}
+
+					s.log.WARNING(F, KV{"event": "disconnected", "peer": peer, "info": e})
+
 				} else {
 					if n.code == 0 {
 						e = note(n.code, n.sub)
@@ -186,6 +192,9 @@ func (s *Session) session(id IP, peer string) chan Update {
 					if len(n.data) > 0 {
 						e += " (" + string(n.data) + ")"
 					}
+
+					s.log.NOTICE(F, KV{"event": "closed", "peer": peer, "info": e})
+
 				}
 
 				s.error(e)

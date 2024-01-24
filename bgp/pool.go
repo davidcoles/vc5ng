@@ -20,7 +20,13 @@ package bgp
 
 import (
 	"net/netip"
+
+	"github.com/davidcoles/vc5ng/log"
 )
+
+type logger = log.Log
+
+type KV = map[string]any
 
 type status = map[string]Status
 
@@ -28,6 +34,17 @@ type Pool struct {
 	c chan map[string]Parameters
 	r chan []IP
 	s chan chan status
+	l logger
+}
+
+func (p *Pool) log() logger {
+	l := p.l
+
+	if l != nil {
+		return l
+	}
+
+	return &log.Nil{}
 }
 
 func (p *Pool) Status() status {
@@ -67,7 +84,9 @@ func dup(i []IP) (o []IP) {
 	return
 }
 
-func NewPool(routerid IP, peers map[string]Parameters, rib_ []IP) *Pool {
+func NewPool(routerid IP, peers map[string]Parameters, rib_ []IP, log logger) *Pool {
+	const F = "pool"
+
 	var nul IP
 
 	rib := dup(rib_)
@@ -76,7 +95,7 @@ func NewPool(routerid IP, peers map[string]Parameters, rib_ []IP) *Pool {
 		return nil
 	}
 
-	pool := &Pool{c: make(chan map[string]Parameters), r: make(chan []IP), s: make(chan chan status)}
+	pool := &Pool{c: make(chan map[string]Parameters), r: make(chan []IP), s: make(chan chan status), l: log}
 
 	go func() {
 
@@ -115,7 +134,9 @@ func NewPool(routerid IP, peers map[string]Parameters, rib_ []IP) *Pool {
 					if session, ok := sessions[peer]; ok {
 						session.Configure(params)
 					} else {
-						sessions[peer] = NewSession(routerid, peer, params, rib)
+						//pool.log().NOTICE(F, "New peer", routerid, peer, params, rib)
+						pool.log().NOTICE(F, KV{"event": "new-peer", "peer": peer, "params": params, "rib": rib})
+						sessions[peer] = NewSession(routerid, peer, params, rib, pool.log())
 					}
 				}
 
@@ -124,6 +145,7 @@ func NewPool(routerid IP, peers map[string]Parameters, rib_ []IP) *Pool {
 					if _, ok := i[peer]; !ok {
 						session.Close()
 						delete(sessions, peer)
+						pool.log().NOTICE(F, KV{"event": "deleted-peer", "peer": peer})
 					}
 				}
 			}
