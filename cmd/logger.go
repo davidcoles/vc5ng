@@ -51,11 +51,6 @@ type entry struct {
 }
 
 type index = int64
-
-type foo interface {
-	Open(string) chan string
-}
-
 type logger struct {
 	mutex   sync.Mutex
 	history []entry
@@ -73,17 +68,6 @@ func init() {
 }
 
 func (l *logger) Println(a ...any) {
-	l.mutex.Lock()
-	defer l.mutex.Unlock()
-
-	if l.indx == 0 {
-		// Not using UnixNano here because large integers cause an
-		// overflow in jq(1) which I often use for highlighting JSON
-		// and it confuses me when the numbers are wrong!
-		l.indx = index(time.Now().Unix()) * 1000
-	}
-
-	l.indx++
 
 	text := fmt.Sprintln(a...)
 
@@ -98,14 +82,10 @@ func (l *logger) Println(a ...any) {
 		text = text + fmt.Sprintln(a...)
 	}
 
-	l.history = append(l.history, entry{Indx: l.indx, Text: text, Time: time.Now().Unix()})
-	for len(l.history) > 1000 {
-		l.history = l.history[1:]
-	}
-
+	l.console(text)
 }
 
-func (l *logger) console(lev uint8, f string, text string) {
+func (l *logger) console(text string) {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
 
@@ -118,13 +98,10 @@ func (l *logger) console(lev uint8, f string, text string) {
 
 	l.indx++
 
-	text = fmt.Sprint(level(lev), " ", f, " ", text)
-
 	l.history = append(l.history, entry{Indx: l.indx, Text: text, Time: time.Now().Unix()})
 	for len(l.history) > 1000 {
 		l.history = l.history[1:]
 	}
-
 }
 
 func null() chan string {
@@ -136,16 +113,17 @@ func null() chan string {
 	return c
 }
 
-func (l *logger) elastic(lev uint8, f string, a ...any) {
+func (l *logger) log(lev uint8, f string, a ...any) {
 
+	l.mutex.Lock()
 	if l.out == nil {
-
 		//l.out = elastic(HOSTNAME)
 		l.out = null()
 		if l.out == nil {
 			log.Fatal("Couldn't start logger")
 		}
 	}
+	l.mutex.Unlock()
 
 	text := fmt.Sprintln(a...)
 
@@ -204,7 +182,7 @@ func (l *logger) elastic(lev uint8, f string, a ...any) {
 	}
 
 	if lev < DEBUG {
-		l.console(lev, f, text)
+		l.console(level(lev) + " " + f + " " + text)
 	}
 
 	select {
@@ -241,33 +219,10 @@ func level(l uint8) string {
 		return a[l]
 	}
 
-	return "XXX"
+	return "UNKNOWN"
 }
-
-func (l *logger) _log(n uint8, s string, a ...any) {
-	if n < DEBUG {
-		log.Println(append([]any{level(n), s}, a...)...)
-	}
-	if n < DEBUG {
-		//l.Println(append([]any{level(n), s}, a...)...)
-	}
-}
-
-func plastic(hostname string) chan string {
-	c := make(chan string, 10000)
-	go func() {
-		for _ = range c {
-		}
-	}()
-
-	return c
-}
-
-var LOGGER func(string) chan string = plastic
 
 func (l *logger) sub(f string) *sub { return &sub{parent: l, facility: f} }
-
-func (l *logger) log(n uint8, s string, a ...any) { l.elastic(n, s, a...) }
 
 func (l *logger) EMERG(s string, a ...any)   { l.log(EMERG, s, a...) }
 func (l *logger) ALERT(s string, a ...any)   { l.log(ALERT, s, a...) }
