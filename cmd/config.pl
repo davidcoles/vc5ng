@@ -7,6 +7,10 @@ use Getopt::Std;
 use feature qw(switch);
 no warnings qw(experimental::smartmatch); 
 
+# This script is designed to take a comapct, human-readable YAML
+# configuration file and translate it into a more verbose, explicit
+# JSON format that the load balancer daemon can ingest.
+
 my $TRUE  = JSON::true;
 my $FALSE = JSON::false;
 
@@ -26,8 +30,24 @@ $json->{'services'} = services($scheduler, $services, \%defaults, $servers, $pol
 $json->{'bgp'} = new_rhi($conf->{'rhi'}, $conf->{'prefixes'});
 $conf->{'learn'}+=0 if defined $conf->{'learn'};
 
-foreach(qw(learn multicast  webserver interfaces vlans)) {
+foreach(qw(vlans learn multicast webserver defcon)) {
     $json->{$_} = $conf->{$_} if exists $conf->{$_};
+}
+
+if(defined $conf->{'rhi'} && jsonbool($conf->{'rhi'}->{'listen'})) {
+    $json->{'listen'} = $TRUE;
+}
+
+if(defined $json->{'defcon'}) {
+    $json->{'defcon'}+=0;
+    given($json->{'defcon'}) {
+	when(1) {}
+	when(2) {}
+	when(3) {}
+	when(4) {}
+	when(5) {}
+	default { die "defcon setting needs to be between an integer between 1 and 5"; }
+    }
 }
 
 print to_json($json, {pretty => 1, canonical => 1});

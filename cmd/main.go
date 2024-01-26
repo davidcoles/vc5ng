@@ -46,7 +46,10 @@ import (
 	"github.com/davidcoles/vc5ng/bgp"
 	"github.com/davidcoles/vc5ng/mon"
 	"github.com/davidcoles/xvs"
+	// "github.com/davidcoles/cue"  pov pan
 )
+
+// TODO:
 
 //go:embed static/*
 var STATIC embed.FS
@@ -62,6 +65,7 @@ func main() {
 	sock := flag.String("s", "", "socket")
 	native := flag.Bool("n", false, "Native mode XDP")
 	redirect := flag.Bool("r", false, "Redirect mode")
+	webserver := flag.String("w", ":80", "Redirect mode")
 
 	flag.Parse()
 
@@ -101,14 +105,19 @@ func main() {
 		log.Fatal("Couldn't load config file:", config, err)
 	}
 
+	if config.Webserver != "" {
+		*webserver = config.Webserver
+	}
+
 	client := &Client{
 		Interfaces: nics,
 		Address:    addr,
 		Redirect:   *redirect,
 		Native:     *native,
-		VLANs:      config.VLANs(),
+		VLANs:      config.vlans(),
 		NAT:        true,
 		Logger:     logs.sub("xvs"),
+		Share:      config.Multicast != "",
 	}
 
 	err = client.Start()
@@ -116,6 +125,11 @@ func main() {
 	if err != nil {
 		logs.EMERG(F, "Couldn't start client:", err)
 		log.Fatal(err)
+	}
+
+	if config.Multicast != "" {
+		go multicast_send(client, config.Multicast)
+		go multicast_recv(client, config.Multicast)
 	}
 
 	pool := bgp.NewPool(addr.As4(), config.BGP, nil, logs.sub("bgp"))
@@ -138,7 +152,7 @@ func main() {
 		},
 	}
 
-	err = director.Start(config.Services.parse())
+	err = director.Start(config.parse())
 
 	if err != nil {
 		logs.EMERG(F, "Couldn't start director:", err)
@@ -147,12 +161,12 @@ func main() {
 
 	done := make(chan bool)
 
-	rib := director.RIB()
 	vip := map[netip.Addr]State{}
 
+	var rib []netip.Addr
 	var summary Summary
 
-	services, old, serviceState, _ := serviceStatus(config, client, director, nil, nil)
+	services, old, _ := serviceStatus(config, client, director, nil)
 
 	go func() {
 		ticker := time.NewTicker(1 * time.Second)
@@ -161,7 +175,7 @@ func main() {
 			mutex.Lock()
 			summary.xvs(client.Info(), summary)
 			summary.Uptime = uint64(time.Now().Sub(start) / time.Second)
-			services, old, serviceState, summary.Current = serviceStatus(config, client, director, old, serviceState)
+			services, old, summary.Current = serviceStatus(config, client, director, old)
 			mutex.Unlock()
 			select {
 			case <-ticker.C:
@@ -172,79 +186,37 @@ func main() {
 	}()
 
 	go func() { // advertise VIPs via BGP
-		timer := time.NewTimer(5 * time.Second)
-		ticker := time.NewTicker(3 * time.Second)
-		old := map[netip.Addr]time.Time{}
+		timer := time.NewTimer(config.Learn * time.Second)
+		ticker := time.NewTicker(5 * time.Second)
+		services := director.Status()
 
-		var init bool
+		defer func() {
+			ticker.Stop()
+			timer.Stop()
+			pool.RIB(nil)
+			time.Sleep(2 * time.Second)
+			pool.Close()
+		}()
+
+		var initialised bool
 		for {
 			select {
-			case _, ok := <-director.C:
-				if !ok {
-					return
-				}
-			case <-ticker.C:
+			case <-ticker.C: // check for matured VIPs
+			case <-director.C: // a backend has changed state
+				services = director.Status()
+			case <-done: // shuting down
+				return
 			case <-timer.C:
-				fmt.Println("STARTS")
-				init = true
+				logs.NOTICE(F, KV{"event": "Learn timer expired"})
+				initialised = true
 			}
 
-			{
-				rib := map[netip.Addr]bool{}
-				new := map[netip.Addr]State{}
+			mutex.Lock()
+			vip = vipState(services, vip, logs)
+			rib = adjRIBOut(vip, initialised)
+			mutex.Unlock()
 
-				for _, v := range director.RIB() {
-					rib[v] = true
-				}
-
-				for _, v := range director.VIPs() {
-
-					if o, ok := vip[v]; ok {
-						up, _ := rib[v]
-
-						if o.up != up {
-							new[v] = State{up: up, time: time.Now()}
-							logs.NOTICE(F, KV{"vip": v, "state": updown(up), "event": "vip"})
-						} else {
-							new[v] = o
-						}
-
-					} else {
-						logs.NOTICE(F, KV{"vip": v, "state": updown(rib[v]), "event": "vip"})
-						new[v] = State{up: rib[v], time: time.Now()}
-					}
-				}
-
-				mutex.Lock()
-				vip = new
-				mutex.Unlock()
-			}
-
-			if init {
-				new := map[netip.Addr]time.Time{}
-				now := time.Now()
-				var out []netip.Addr
-
-				// VIP needs to be up for at least 5 seconds to be advertised
-				for _, ip := range director.RIB() {
-					if t, exists := old[ip]; exists {
-						if now.Sub(t) > (5 * time.Second) {
-							out = append(out, ip)
-						}
-						new[ip] = t
-					} else {
-						new[ip] = now
-					}
-				}
-
-				old = new
-
-				//fmt.Println("RIB:", rib)
-				mutex.Lock()
-				rib = out
-				pool.RIB(rib)
-				mutex.Unlock()
-			}
+			pool.RIB(rib)
 		}
 	}()
 
@@ -339,6 +311,7 @@ func main() {
 		w.Header().Set("Content-Type", "text/plain")
 		w.Write([]byte(strings.Join(metrics, "\n") + "\n"))
 	})
+
 	http.HandleFunc("/stats.json", func(w http.ResponseWriter, r *http.Request) {
 		type status struct {
 			Services map[VIP][]Serv        `json:"services"`
@@ -368,7 +341,7 @@ func main() {
 	})
 
 	go func() {
-		log.Fatal(http.ListenAndServe(":80", nil))
+		log.Fatal(http.ListenAndServe(*webserver, nil))
 	}()
 
 	sig := make(chan os.Signal)
@@ -377,13 +350,10 @@ func main() {
 	for {
 		switch <-sig {
 		case syscall.SIGQUIT:
-			logs.ALERT(F, "QUIT signal received - shutting down")
+			logs.ALERT(F, "SIGQUIT received - shutting down")
 			fmt.Println("CLOSING")
-			close(done)
-			pool.Close()
-			time.Sleep(time.Second)
-			director.Stop()
-			time.Sleep(time.Second)
+			close(done) // shut down BGP, etc
+			time.Sleep(4 * time.Second)
 			fmt.Println("DONE")
 			return
 		case syscall.SIGINT:
@@ -392,8 +362,8 @@ func main() {
 			if err == nil {
 				mutex.Lock()
 				config = conf
-				client.UpdateVLANs(config.VLANs())
-				director.Configure(config.Services.parse())
+				client.UpdateVLANs(config.vlans())
+				director.Configure(config.parse())
 				pool.Configure(config.BGP)
 				mutex.Unlock()
 			} else {
@@ -404,8 +374,8 @@ func main() {
 }
 
 type query struct {
-	Addr  string    `json:"addr"`
-	Check mon.Check `json:"check"`
+	Address string    `json:"address"`
+	Check   mon.Check `json:"check"`
 }
 
 type reply struct {
@@ -415,7 +385,7 @@ type reply struct {
 
 func probe(client *http.Client, vip, rip, addr netip.Addr, check mon.Check, l *logger) (bool, string) {
 
-	q := query{Addr: addr.String(), Check: check}
+	q := query{Address: addr.String(), Check: check}
 
 	buff := new(bytes.Buffer)
 	err := json.NewEncoder(buff).Encode(&q)
@@ -595,7 +565,7 @@ func netns(socket string, addr netip.Addr) {
 			return
 		}
 
-		rip := netip.MustParseAddr(q.Addr)
+		rip := netip.MustParseAddr(q.Address)
 		vip := rip // fake the vip - NAT will take care of filling in the right address
 
 		var rep reply
@@ -653,6 +623,7 @@ func (s *Summary) xvs(x xvs.Info, y Summary) Summary {
 	s.Latency = x.Latency
 	s.Dropped = x.Dropped
 	s.Blocked = x.Blocked
+	s.NotQueued = x.NotQueued
 
 	s.Octets = x.Octets
 	s.Packets = x.Packets
@@ -685,10 +656,10 @@ type VIPStats struct {
 
 func vipStatus(in map[VIP][]Serv, rib []netip.Addr) (out []VIPStats) {
 
-	foo := map[VIP]bool{}
+	up := map[VIP]bool{}
 
 	for _, r := range rib {
-		foo[r] = true
+		up[r] = true
 	}
 
 	for vip, list := range in {
@@ -697,7 +668,7 @@ func vipStatus(in map[VIP][]Serv, rib []netip.Addr) (out []VIPStats) {
 			stats.add(s.Stats)
 		}
 
-		out = append(out, VIPStats{VIP: vip, Stats: stats, Up: foo[vip]})
+		out = append(out, VIPStats{VIP: vip, Stats: stats, Up: up[vip]})
 	}
 
 	sort.SliceStable(out, func(i, j int) bool {
@@ -707,11 +678,10 @@ func vipStatus(in map[VIP][]Serv, rib []netip.Addr) (out []VIPStats) {
 	return
 }
 
-func serviceStatus(config *Config, client *Client, director *vc5ng.Director, _stats map[Key]Stats, _state map[Tuple]State) (map[VIP][]Serv, map[Key]Stats, map[Tuple]State, uint64) {
+func serviceStatus(config *Config, client *Client, director *vc5ng.Director, _stats map[Key]Stats) (map[VIP][]Serv, map[Key]Stats, uint64) {
 
 	var current uint64
 
-	state := map[Tuple]State{}
 	stats := map[Key]Stats{}
 	status := map[VIP][]Serv{}
 
@@ -725,14 +695,6 @@ func serviceStatus(config *Config, client *Client, director *vc5ng.Director, _st
 
 		available := svc.Available()
 
-		up := available >= svc.Required
-
-		if s, exists := _state[t]; !exists || s.up != up {
-			state[t] = State{up: up, time: time.Now()}
-		} else {
-			state[t] = s
-		}
-
 		serv := Serv{
 			Name:        cnf.Name,
 			Description: cnf.Description,
@@ -741,8 +703,8 @@ func serviceStatus(config *Config, client *Client, director *vc5ng.Director, _st
 			Protocol:    protocol(svc.Protocol),
 			Required:    svc.Required,
 			Available:   available,
-			Up:          up,
-			For:         uint64(time.Now().Sub(state[t].time) / time.Second),
+			Up:          svc.Up,
+			For:         uint64(time.Now().Sub(svc.When) / time.Second),
 		}
 
 		key := Key{VIP: svc.Address, Port: svc.Port, Protocol: svc.Protocol}
@@ -788,7 +750,7 @@ func serviceStatus(config *Config, client *Client, director *vc5ng.Director, _st
 		status[svc.Address] = append(status[svc.Address], serv)
 	}
 
-	return status, stats, state, current
+	return status, stats, current
 }
 
 func updown(b bool) string {
@@ -796,4 +758,123 @@ func updown(b bool) string {
 		return "up"
 	}
 	return "down"
+}
+
+const maxDatagramSize = 1500
+
+func multicast_send(client *Client, address string) {
+
+	addr, err := net.ResolveUDPAddr("udp", address)
+
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	conn, err := net.DialUDP("udp", nil, addr)
+
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	conn.SetWriteBuffer(maxDatagramSize * 100)
+
+	ticker := time.NewTicker(time.Millisecond * 10)
+
+	var buff [maxDatagramSize]byte
+
+	for {
+		select {
+		case <-ticker.C:
+			n := 0
+
+		read_flow:
+			f := client.ReadFlow()
+			if len(f) > 0 {
+				buff[n] = uint8(len(f))
+
+				copy(buff[n+1:], f[:])
+				n += 1 + len(f)
+				if n < maxDatagramSize-100 {
+					goto read_flow
+				}
+			}
+
+			if n > 0 {
+				conn.Write(buff[:n])
+			}
+		}
+	}
+}
+
+func multicast_recv(client *Client, address string) {
+	udp, err := net.ResolveUDPAddr("udp", address)
+
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	s := []string{`|`, `/`, `-`, `\`}
+	var x int
+
+	conn, err := net.ListenMulticastUDP("udp", nil, udp)
+
+	conn.SetReadBuffer(maxDatagramSize * 1000)
+
+	buff := make([]byte, maxDatagramSize)
+
+	for {
+		nread, _, err := conn.ReadFromUDP(buff)
+		fmt.Print(s[x%4] + "\b")
+		x++
+		if err == nil {
+			for n := 0; n+1 < nread; {
+				l := int(buff[n])
+				o := n + 1
+				n = o + l
+				if l > 0 && n <= nread {
+					client.WriteFlow(buff[o:n])
+				}
+			}
+		}
+	}
+}
+
+func adjRIBOut(vip map[netip.Addr]State, initialised bool) (r []netip.Addr) {
+	for v, s := range vip {
+		if initialised && s.up && time.Now().Sub(s.time) > time.Second*5 {
+			r = append(r, v)
+		}
+	}
+	return
+}
+
+func vipState(services []vc5ng.Service, old map[netip.Addr]State, logs *logger) map[netip.Addr]State {
+	F := "vips"
+
+	rib := map[netip.Addr]bool{}
+	new := map[netip.Addr]State{}
+
+	for _, v := range vc5ng.HealthyVIPs(services) {
+		rib[v] = true
+	}
+
+	for _, v := range vc5ng.AllVIPs(services) {
+
+		if o, ok := old[v]; ok {
+			up, _ := rib[v]
+
+			if o.up != up {
+				new[v] = State{up: up, time: time.Now()}
+				logs.NOTICE(F, KV{"vip": v, "state": updown(up), "event": "vip"})
+			} else {
+				new[v] = o
+			}
+
+		} else {
+			logs.NOTICE(F, KV{"vip": v, "state": updown(rib[v]), "event": "vip"})
+			new[v] = State{up: rib[v], time: time.Now()}
+		}
+	}
+
+	return new
 }

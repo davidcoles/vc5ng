@@ -23,6 +23,7 @@ import (
 	"net/netip"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/davidcoles/vc5ng/log"
 	"github.com/davidcoles/vc5ng/mon"
@@ -45,6 +46,8 @@ type Service struct {
 	Required     uint8
 	Destinations []Destination
 	available    uint8
+	Up           bool
+	When         time.Time
 }
 
 type Destination struct {
@@ -61,12 +64,7 @@ type Balancer interface {
 }
 
 type protocol uint8
-type tuple struct {
-	Addr     netip.Addr
-	Port     uint16
-	Protocol uint8
-}
-
+type tuple = mon.Service
 type nilBalancer struct{}
 
 func (b *nilBalancer) Configure([]Service) error { return nil }
@@ -130,6 +128,13 @@ type Director struct {
 	cfg    map[tuple]Service
 	mon    *mon.Mon
 	die    chan bool
+
+	svc map[tuple]status
+}
+
+type status struct {
+	up   bool
+	time time.Time
 }
 
 func (d *Director) Start(cfg []Service) (err error) {
@@ -169,7 +174,7 @@ func (d *Director) Configure(config []Service) error {
 	cfg := map[tuple]Service{}
 
 	for _, s := range config {
-		t := tuple{Addr: s.Address, Port: s.Port, Protocol: s.Protocol}
+		t := tuple{Address: s.Address, Port: s.Port, Protocol: s.Protocol}
 		cfg[t] = s
 	}
 
@@ -178,8 +183,8 @@ func (d *Director) Configure(config []Service) error {
 
 	// scan previous config for checks to see if vip/service existed ...
 	for s, _ := range d.cfg {
-		vips[s.Addr] = true
-		svcs[mon.Service{Address: s.Addr, Port: s.Port, Protocol: s.Protocol}] = true
+		vips[s.Address] = true
+		svcs[mon.Service{Address: s.Address, Port: s.Port, Protocol: s.Protocol}] = true
 	}
 
 	services := map[mon.Instance]mon.Target{}
@@ -242,34 +247,6 @@ func (d *Director) Configure(config []Service) error {
 	return nil
 }
 
-// Routing Information Base - the list of virtual IP address which are healthy
-func (d *Director) RIB() (rib []netip.Addr) {
-	d.mutex.Lock()
-	defer d.mutex.Unlock()
-
-	vips := map[netip.Addr]bool{}
-
-	for _, s := range d.services() {
-		vip := s.Address
-
-		if s.Healthy() {
-			if _, ok := vips[vip]; !ok {
-				vips[vip] = true
-			}
-		} else {
-			vips[vip] = false
-		}
-	}
-
-	for ip, ok := range vips {
-		if ok {
-			rib = append(rib, ip)
-		}
-	}
-
-	return rib
-}
-
 func clone(in []Service) (out []Service) {
 
 	for _, s := range in {
@@ -290,17 +267,19 @@ func (d *Director) services() (r []Service) {
 
 	m := d.mon
 
+	//vip := map[netip.Addr]status{}
+	svc := map[tuple]status{}
+
 	for _, s := range d.cfg {
 
 		var available uint8
 		var destinations []Destination
 
+		t := tuple{Address: s.Address, Port: s.Port, Protocol: s.Protocol}
+
 		for _, d := range s.Destinations {
 
-			status, _ := m.Status(
-				mon.Service{Address: s.Address, Port: s.Port, Protocol: s.Protocol},
-				mon.Destination{Address: d.Address, Port: d.Port},
-			)
+			status, _ := m.Status(t, mon.Destination{Address: d.Address, Port: d.Port})
 
 			d.Status = status
 
@@ -314,8 +293,25 @@ func (d *Director) services() (r []Service) {
 		s.Destinations = destinations
 		s.available = available
 
+		state, ok := d.svc[t]
+
+		up := s.Healthy()
+
+		if !ok || state.up != up {
+			state.time = time.Now()
+		}
+
+		state.up = up
+
+		svc[t] = state
+
+		s.Up = state.up
+		s.When = state.time
+
 		r = append(r, s)
 	}
+
+	d.svc = svc
 
 	return
 }
@@ -327,23 +323,6 @@ func (d *Director) status() (services []Service) {
 	sort.SliceStable(services, func(i, j int) bool { return services[i].less(services[j]) })
 
 	return services
-}
-
-func (d *Director) VIPs() (vips []netip.Addr) {
-	d.mutex.Lock()
-	defer d.mutex.Unlock()
-
-	vip := map[netip.Addr]bool{}
-
-	for _, s := range d.status() {
-		vip[s.Address] = true
-	}
-
-	for v, _ := range vip {
-		vips = append(vips, v)
-	}
-
-	return
 }
 
 func (d *Director) Status() (services []Service) {
@@ -399,4 +378,43 @@ func (d *Director) balancer() Balancer {
 	}
 
 	return b
+}
+
+func AllVIPs(services []Service) (r []netip.Addr) {
+	vips := map[netip.Addr]bool{}
+
+	for _, s := range services {
+		vips[s.Address] = true
+	}
+
+	for v, _ := range vips {
+		r = append(r, v)
+	}
+
+	return
+}
+
+func HealthyVIPs(services []Service) (r []netip.Addr) {
+
+	vips := map[netip.Addr]bool{}
+
+	for _, s := range services {
+		vip := s.Address
+
+		if s.Up {
+			if _, ok := vips[vip]; !ok {
+				vips[vip] = true
+			}
+		} else {
+			vips[vip] = false
+		}
+	}
+
+	for ip, ok := range vips {
+		if ok {
+			r = append(r, ip)
+		}
+	}
+
+	return
 }

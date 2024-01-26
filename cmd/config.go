@@ -28,6 +28,7 @@ import (
 	"os"
 	"regexp"
 	"strconv"
+	"time"
 
 	"github.com/davidcoles/vc5ng"
 	"github.com/davidcoles/vc5ng/bgp"
@@ -70,22 +71,22 @@ type services map[Tuple]Service
 
 // Load balancer configuration
 type Config struct {
-	// Two level dictionary of virual IP addresses and Layer 4
-	// protocol/port number of services provided by the balancer
-	//VIPs map[string]map[string]Service `json:"vips,omitempty"`
-
 	Services services `json:"services,omitempty"`
 
 	// VLAN ID to subnet mappings
-	VLANs_ map[uint16]Prefix `json:"vlans,omitempty"`
+	VLANs map[uint16]Prefix `json:"vlans,omitempty"`
 
 	BGP map[string]bgp.Parameters `json:"bgp,omitempty"`
+
+	Learn     time.Duration `json:"learn,omitempty"`
+	Multicast string        `json:"multicast,omitempty"`
+	Webserver string        `json:"webserver,omitempty"`
 }
 
-func (c *Config) VLANs() map[uint16]net.IPNet {
+func (c *Config) vlans() map[uint16]net.IPNet {
 	ret := map[uint16]net.IPNet{}
 
-	for k, v := range c.VLANs_ {
+	for k, v := range c.VLANs {
 		ret[k] = net.IPNet(v)
 	}
 
@@ -344,11 +345,11 @@ func (p *Prefix) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-func (cfg services) parse() []vc5ng.Service {
+func (c *Config) parse() []vc5ng.Service {
 
 	var services []vc5ng.Service
 
-	for ipp, svc := range cfg {
+	for ipp, svc := range c.Services {
 
 		service := vc5ng.Service{
 			Address:  ipp.Addr,
