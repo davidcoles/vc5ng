@@ -22,7 +22,7 @@ import (
 	"errors"
 	"net/netip"
 
-	"github.com/davidcoles/vc5ng"
+	"github.com/davidcoles/cue"
 	"github.com/davidcoles/xvs"
 )
 
@@ -34,10 +34,10 @@ type tuple struct {
 
 type Balancer struct {
 	Client    *xvs.Client
-	ProbeFunc func(vip, rip, nat netip.Addr, check vc5ng.Check) (bool, string)
+	ProbeFunc func(vip, rip, nat netip.Addr, check cue.Check) (bool, string)
 }
 
-func (b *Balancer) Probe(vip netip.Addr, rip netip.Addr, check vc5ng.Check) (bool, string) {
+func (b *Balancer) Probe(vip netip.Addr, rip netip.Addr, check cue.Check) (bool, string) {
 
 	f := b.ProbeFunc
 
@@ -54,9 +54,9 @@ func (b *Balancer) Probe(vip netip.Addr, rip netip.Addr, check vc5ng.Check) (boo
 	return f(vip, rip, nat, check)
 }
 
-func (b *Balancer) Configure(services []vc5ng.Service) error {
+func (b *Balancer) Configure(services []cue.Service) error {
 
-	target := map[tuple]vc5ng.Service{}
+	target := map[tuple]cue.Service{}
 
 	for _, s := range services {
 		target[tuple{addr: s.Address, port: s.Port, prot: s.Protocol}] = s

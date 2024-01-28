@@ -42,11 +42,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/davidcoles/vc5ng"
-	"github.com/davidcoles/vc5ng/bgp"
-	"github.com/davidcoles/vc5ng/mon"
+	"github.com/davidcoles/cue"
+	"github.com/davidcoles/cue/bgp"
+	"github.com/davidcoles/cue/mon"
 	"github.com/davidcoles/xvs"
-	// "github.com/davidcoles/cue"  pov pan
 )
 
 // TODO:
@@ -142,7 +141,7 @@ func main() {
 
 	af_unix := unix(socket.Name())
 
-	director := &vc5ng.Director{
+	director := &cue.Director{
 		Logger: logs.sub("director"),
 		Balancer: &Balancer{
 			Client: client,
@@ -678,7 +677,7 @@ func vipStatus(in map[VIP][]Serv, rib []netip.Addr) (out []VIPStats) {
 	return
 }
 
-func serviceStatus(config *Config, client *Client, director *vc5ng.Director, _stats map[Key]Stats) (map[VIP][]Serv, map[Key]Stats, uint64) {
+func serviceStatus(config *Config, client *Client, director *cue.Director, _stats map[Key]Stats) (map[VIP][]Serv, map[Key]Stats, uint64) {
 
 	var current uint64
 
@@ -848,17 +847,17 @@ func adjRIBOut(vip map[netip.Addr]State, initialised bool) (r []netip.Addr) {
 	return
 }
 
-func vipState(services []vc5ng.Service, old map[netip.Addr]State, logs *logger) map[netip.Addr]State {
+func vipState(services []cue.Service, old map[netip.Addr]State, logs *logger) map[netip.Addr]State {
 	F := "vips"
 
 	rib := map[netip.Addr]bool{}
 	new := map[netip.Addr]State{}
 
-	for _, v := range vc5ng.HealthyVIPs(services) {
+	for _, v := range cue.HealthyVIPs(services) {
 		rib[v] = true
 	}
 
-	for _, v := range vc5ng.AllVIPs(services) {
+	for _, v := range cue.AllVIPs(services) {
 
 		if o, ok := old[v]; ok {
 			up, _ := rib[v]

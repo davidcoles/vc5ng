@@ -30,9 +30,9 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/davidcoles/vc5ng"
-	"github.com/davidcoles/vc5ng/bgp"
-	"github.com/davidcoles/vc5ng/mon"
+	"github.com/davidcoles/cue"
+	"github.com/davidcoles/cue/bgp"
+	"github.com/davidcoles/cue/mon"
 )
 
 const (
@@ -345,13 +345,13 @@ func (p *Prefix) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-func (c *Config) parse() []vc5ng.Service {
+func (c *Config) parse() []cue.Service {
 
-	var services []vc5ng.Service
+	var services []cue.Service
 
 	for ipp, svc := range c.Services {
 
-		service := vc5ng.Service{
+		service := cue.Service{
 			Address:  ipp.Addr,
 			Port:     ipp.Port,
 			Protocol: ipp.Protocol,
@@ -361,7 +361,7 @@ func (c *Config) parse() []vc5ng.Service {
 
 		for ap, dst := range svc.Destinations {
 
-			destination := vc5ng.Destination{
+			destination := cue.Destination{
 				Address:  ap.Addr,
 				Port:     ap.Port,
 				Weight:   dst.Weight,
