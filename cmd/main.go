@@ -61,10 +61,11 @@ func main() {
 	var mutex sync.Mutex
 
 	start := time.Now()
+	root := flag.String("r", "", "webserver root directory")
 	sock := flag.String("s", "", "socket")
 	native := flag.Bool("n", false, "Native mode XDP")
-	redirect := flag.Bool("r", false, "Redirect mode")
-	webserver := flag.String("w", ":80", "Redirect mode")
+	redirect := flag.Bool("R", false, "Redirect mode")
+	webserver := flag.String("w", ":80", "webserver listen address")
 
 	flag.Parse()
 
@@ -172,7 +173,7 @@ func main() {
 		defer ticker.Stop()
 		for {
 			mutex.Lock()
-			summary.xvs(client.Info(), summary)
+			summary.update(client.Info())
 			summary.Uptime = uint64(time.Now().Sub(start) / time.Second)
 			services, old, summary.Current = serviceStatus(config, client, director, old)
 			mutex.Unlock()
@@ -222,9 +223,27 @@ func main() {
 	fmt.Println("******************** RUNNING ********************")
 
 	static := http.FS(STATIC)
-	//var fs http.FileSystem
+	var fs http.FileSystem
+
+	if *root != "" {
+		fs = http.FileSystem(http.Dir(*root))
+	}
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+
+		if fs != nil {
+			file := r.URL.Path
+			if file == "/" {
+				file = "/index.html"
+			}
+
+			if f, err := fs.Open(file); err == nil {
+				f.Close()
+				http.FileServer(fs).ServeHTTP(w, r)
+				return
+			}
+		}
+
 		r.URL.Path = "static/" + r.URL.Path
 		http.FileServer(static).ServeHTTP(w, r)
 	})
@@ -232,13 +251,13 @@ func main() {
 	http.HandleFunc("/log/", func(w http.ResponseWriter, r *http.Request) {
 
 		start, _ := strconv.ParseUint(r.URL.Path[5:], 10, 64)
-
-		w.Header().Set("Content-Type", "application/json")
-
 		logs := logs.get(index(start))
-
-		js, _ := json.MarshalIndent(&logs, " ", " ")
-
+		js, err := json.MarshalIndent(&logs, " ", " ")
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
 		w.Write(js)
 		w.Write([]byte("\n"))
 	})
@@ -268,9 +287,8 @@ func main() {
 		w.Write([]byte("\n"))
 	})
 
-	http.HandleFunc("/status.json", func(w http.ResponseWriter, r *http.Request) {
-		status := director.Status()
-		js, err := json.MarshalIndent(&status, " ", " ")
+	http.HandleFunc("/cue.json", func(w http.ResponseWriter, r *http.Request) {
+		js, err := json.MarshalIndent(director.Status(), " ", " ")
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
@@ -280,7 +298,7 @@ func main() {
 		w.Write([]byte("\n"))
 	})
 
-	http.HandleFunc("/xvs", func(w http.ResponseWriter, r *http.Request) {
+	http.HandleFunc("/xvs.json", func(w http.ResponseWriter, r *http.Request) {
 		var ret []interface{}
 		type status struct {
 			Service      xvs.ServiceExtended
@@ -301,31 +319,19 @@ func main() {
 		w.Write([]byte("\n"))
 	})
 
-	http.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
-
+	http.HandleFunc("/status.json", func(w http.ResponseWriter, r *http.Request) {
 		mutex.Lock()
-		metrics := prometheus(services, summary, vip)
-		mutex.Unlock()
-
-		w.Header().Set("Content-Type", "text/plain")
-		w.Write([]byte(strings.Join(metrics, "\n") + "\n"))
-	})
-
-	http.HandleFunc("/stats.json", func(w http.ResponseWriter, r *http.Request) {
-		type status struct {
-			Services map[VIP][]Serv        `json:"services"`
+		js, err := json.MarshalIndent(struct {
 			Summary  Summary               `json:"summary"`
-			VIP      []VIPStats            `json:"vip"`
+			Services map[VIP][]Serv        `json:"services"`
 			BGP      map[string]bgp.Status `json:"bgp"`
+			VIP      []VIPStats            `json:"vip"`
 			RIB      []netip.Addr          `json:"rib"`
-		}
-
-		mutex.Lock()
-		js, err := json.MarshalIndent(&status{
-			Services: services,
+		}{
 			Summary:  summary,
-			VIP:      vipStatus(services, rib),
+			Services: services,
 			BGP:      pool.Status(),
+			VIP:      vipStatus(services, rib),
 			RIB:      rib,
 		}, " ", " ")
 		mutex.Unlock()
@@ -337,6 +343,16 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(js)
 		w.Write([]byte("\n"))
+	})
+
+	http.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
+
+		mutex.Lock()
+		metrics := prometheus(services, summary, vip)
+		mutex.Unlock()
+
+		w.Header().Set("Content-Type", "text/plain")
+		w.Write([]byte(strings.Join(metrics, "\n") + "\n"))
 	})
 
 	go func() {
@@ -486,7 +502,6 @@ func spawn(logs *logger, netns string, args ...string) {
 		reader := func(s string, fh io.ReadCloser) {
 			scanner := bufio.NewScanner(fh)
 			for scanner.Scan() {
-				//fmt.Println("NETNS:", s, scanner.Text())
 				logs.WARNING(F, s, scanner.Text())
 			}
 		}
@@ -494,13 +509,11 @@ func spawn(logs *logger, netns string, args ...string) {
 		go reader("stderr", stderr)
 
 		if err := cmd.Start(); err != nil {
-			//log.Println("Daemon", err)
 			logs.ERR(F, "Daemon", err)
 		} else {
 			reader("stdout", stdout)
 
 			if err := cmd.Wait(); err != nil {
-				//log.Println("Daemon", err)
 				logs.ERR(F, "Daemon", err)
 			}
 		}
@@ -598,86 +611,59 @@ func unix(socket string) *http.Client {
 	}
 }
 
-func (s *Stats) xvs(x xvs.Stats, y Stats) Stats {
+func (s *Stats) update(x xvs.Stats) Stats {
+	o := *s
+
 	s.Octets = x.Octets
 	s.Packets = x.Packets
 	s.Flows = x.Flows
 	s.Current = x.Current
 	s.time = time.Now()
 
-	if y.time.Unix() != 0 {
-		diff := uint64(s.time.Sub(y.time) / time.Millisecond)
+	if o.time.Unix() != 0 {
+		diff := uint64(s.time.Sub(o.time) / time.Millisecond)
 
 		if diff != 0 {
-			s.OctetsPerSecond = (1000 * (s.Octets - y.Octets)) / diff
-			s.PacketsPerSecond = (1000 * (s.Packets - y.Packets)) / diff
-			s.FlowsPerSecond = (1000 * (s.Flows - y.Flows)) / diff
+			s.PacketsPerSecond = (1000 * (s.Packets - o.Packets)) / diff
+			s.OctetsPerSecond = (1000 * (s.Octets - o.Octets)) / diff
+			s.FlowsPerSecond = (1000 * (s.Flows - o.Flows)) / diff
 		}
 	}
 
 	return *s
 }
 
-func (s *Summary) xvs(x xvs.Info, y Summary) Summary {
-	s.Latency = x.Latency
-	s.Dropped = x.Dropped
-	s.Blocked = x.Blocked
-	s.NotQueued = x.NotQueued
+func (s *Summary) update(i xvs.Info) Summary {
+	o := *s
 
-	s.Octets = x.Octets
-	s.Packets = x.Packets
-	s.Flows = x.Flows
+	s.Latency = i.Latency
+	s.Dropped = i.Dropped
+	s.Blocked = i.Blocked
+	s.NotQueued = i.NotQueued
+
+	s.Octets = i.Octets
+	s.Packets = i.Packets
+	s.Flows = i.Flows
 	s.time = time.Now()
 
-	if y.time.Unix() != 0 {
-		diff := uint64(s.time.Sub(y.time) / time.Millisecond)
+	if o.time.Unix() != 0 {
+		diff := uint64(s.time.Sub(o.time) / time.Millisecond)
 
 		if diff != 0 {
-			s.DroppedPerSecond = (1000 * (s.Dropped - y.Dropped)) / diff
-			s.BlockedPerSecond = (1000 * (s.Blocked - y.Blocked)) / diff
-			s.NotQueuedPerSecond = (1000 * (s.NotQueued - y.NotQueued)) / diff
+			s.DroppedPerSecond = (1000 * (s.Dropped - o.Dropped)) / diff
+			s.BlockedPerSecond = (1000 * (s.Blocked - o.Blocked)) / diff
+			s.NotQueuedPerSecond = (1000 * (s.NotQueued - o.NotQueued)) / diff
 
-			s.OctetsPerSecond = (1000 * (s.Octets - y.Octets)) / diff
-			s.PacketsPerSecond = (1000 * (s.Packets - y.Packets)) / diff
-			s.FlowsPerSecond = (1000 * (s.Flows - y.Flows)) / diff
+			s.PacketsPerSecond = (1000 * (s.Packets - o.Packets)) / diff
+			s.OctetsPerSecond = (1000 * (s.Octets - o.Octets)) / diff
+			s.FlowsPerSecond = (1000 * (s.Flows - o.Flows)) / diff
 		}
 	}
 
 	return *s
 }
 
-type VIP = netip.Addr
-type VIPStats struct {
-	VIP   VIP   `json:"vip"`
-	Up    bool  `json:"up"`
-	Stats Stats `json:"stats"`
-}
-
-func vipStatus(in map[VIP][]Serv, rib []netip.Addr) (out []VIPStats) {
-
-	up := map[VIP]bool{}
-
-	for _, r := range rib {
-		up[r] = true
-	}
-
-	for vip, list := range in {
-		var stats Stats
-		for _, s := range list {
-			stats.add(s.Stats)
-		}
-
-		out = append(out, VIPStats{VIP: vip, Stats: stats, Up: up[vip]})
-	}
-
-	sort.SliceStable(out, func(i, j int) bool {
-		return out[i].VIP.Compare(out[j].VIP) < 0
-	})
-
-	return
-}
-
-func serviceStatus(config *Config, client *Client, director *cue.Director, _stats map[Key]Stats) (map[VIP][]Serv, map[Key]Stats, uint64) {
+func serviceStatus(config *Config, client *Client, director *cue.Director, old map[Key]Stats) (map[VIP][]Serv, map[Key]Stats, uint64) {
 
 	var current uint64
 
@@ -694,6 +680,7 @@ func serviceStatus(config *Config, client *Client, director *cue.Director, _stat
 
 		available := svc.Available()
 
+		key := Key{VIP: svc.Address, Port: svc.Port, Protocol: svc.Protocol}
 		serv := Serv{
 			Name:        cnf.Name,
 			Description: cnf.Description,
@@ -704,10 +691,9 @@ func serviceStatus(config *Config, client *Client, director *cue.Director, _stat
 			Available:   available,
 			Up:          svc.Up,
 			For:         uint64(time.Now().Sub(svc.When) / time.Second),
+			Stats:       old[key],
 		}
-
-		key := Key{VIP: svc.Address, Port: svc.Port, Protocol: svc.Protocol}
-		stats[key] = serv.Stats.xvs(xse.Stats, _stats[key])
+		stats[key] = serv.Stats.update(xse.Stats)
 
 		xvs := map[netip.Addr]xvs.Stats{}
 		mac := map[netip.Addr]string{}
@@ -720,10 +706,12 @@ func serviceStatus(config *Config, client *Client, director *cue.Director, _stat
 		}
 
 		for _, dst := range svc.Destinations {
-			s, _ := xvs[dst.Address]
-
 			status := dst.Status
 
+			key := Key{
+				VIP: svc.Address, Port: svc.Port, Protocol: svc.Protocol,
+				RIP: dst.Address, RPort: dst.Port,
+			}
 			dest := Dest{
 				Address:    dst.Address,
 				Port:       dst.Port,
@@ -734,10 +722,9 @@ func serviceStatus(config *Config, client *Client, director *cue.Director, _stat
 				Diagnostic: status.Diagnostic,
 				Weight:     dst.Weight,
 				MAC:        mac[dst.Address],
+				Stats:      old[key],
 			}
-
-			key := Key{VIP: svc.Address, RIP: dst.Address, Port: svc.Port, Protocol: svc.Protocol}
-			stats[key] = dest.Stats.xvs(s, _stats[key])
+			stats[key] = dest.Stats.update(xvs[dst.Address])
 
 			serv.Destinations = append(serv.Destinations, dest)
 		}
@@ -750,13 +737,6 @@ func serviceStatus(config *Config, client *Client, director *cue.Director, _stat
 	}
 
 	return status, stats, current
-}
-
-func updown(b bool) string {
-	if b {
-		return "up"
-	}
-	return "down"
 }
 
 const maxDatagramSize = 1500
@@ -838,12 +818,34 @@ func multicast_recv(client *Client, address string) {
 	}
 }
 
-func adjRIBOut(vip map[netip.Addr]State, initialised bool) (r []netip.Addr) {
-	for v, s := range vip {
-		if initialised && s.up && time.Now().Sub(s.time) > time.Second*5 {
-			r = append(r, v)
-		}
+type VIP = netip.Addr
+type VIPStats struct {
+	VIP   VIP   `json:"vip"`
+	Up    bool  `json:"up"`
+	Stats Stats `json:"stats"`
+}
+
+func vipStatus(in map[VIP][]Serv, rib []netip.Addr) (out []VIPStats) {
+
+	up := map[VIP]bool{}
+
+	for _, r := range rib {
+		up[r] = true
 	}
+
+	for vip, list := range in {
+		var stats Stats
+		for _, s := range list {
+			stats.add(s.Stats)
+		}
+
+		out = append(out, VIPStats{VIP: vip, Stats: stats, Up: up[vip]})
+	}
+
+	sort.SliceStable(out, func(i, j int) bool {
+		return out[i].VIP.Compare(out[j].VIP) < 0
+	})
+
 	return
 }
 
@@ -876,4 +878,20 @@ func vipState(services []cue.Service, old map[netip.Addr]State, logs *logger) ma
 	}
 
 	return new
+}
+
+func adjRIBOut(vip map[netip.Addr]State, initialised bool) (r []netip.Addr) {
+	for v, s := range vip {
+		if initialised && s.up && time.Now().Sub(s.time) > time.Second*5 {
+			r = append(r, v)
+		}
+	}
+	return
+}
+
+func updown(b bool) string {
+	if b {
+		return "up"
+	}
+	return "down"
 }

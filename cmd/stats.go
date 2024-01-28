@@ -57,6 +57,7 @@ type Key struct {
 	VIP      netip.Addr
 	RIP      netip.Addr
 	Port     uint16
+	RPort    uint16
 	Protocol uint8
 }
 

@@ -10,7 +10,7 @@ export CGO_LDFLAGS ?= -L$(LIBBPF)
 
 default: libbpf/src/libbpf.a vc5
 
-vc5: *.go static/*
+vc5: *.go static/* libbpf/src/libbpf.a
 	go build -race -o $@
 
 config.yaml:

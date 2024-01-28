@@ -102,7 +102,7 @@ function tsf(num) {
 }
 
 
-function updateStats(url) {
+function updateStatus(url) {
     getJSON(url, function(err, data) {
         if (err !== null) {
             console.log('Something went wrong: ' + err)
@@ -275,13 +275,13 @@ var lastlog = 0;
 function lb() {
     
     //var url = window.location.href + 'stats.json';
-    var url = '/stats.json';
+    var url = '/status.json';
     var log = '/log/';    
     //var log = window.location.href + 'log/';    
 
     console.log(url)
     function refresh() {
-	updateStats(url);
+	updateStatus(url);
 	updateLogs(log);
 	setTimeout(refresh, 2000);
     }
