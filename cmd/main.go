@@ -66,6 +66,7 @@ func main() {
 	native := flag.Bool("n", false, "Native mode XDP")
 	redirect := flag.Bool("R", false, "Redirect mode")
 	webserver := flag.String("w", ":80", "webserver listen address")
+	elasticsearch := flag.Bool("e", false, "Elasticsearch logging")
 
 	flag.Parse()
 
@@ -78,7 +79,7 @@ func main() {
 		return
 	}
 
-	logs := &logger{}
+	logs := &logger{elastic: *elasticsearch}
 
 	socket, err := ioutil.TempFile("/tmp", "vc5ns")
 
@@ -173,8 +174,7 @@ func main() {
 		defer ticker.Stop()
 		for {
 			mutex.Lock()
-			summary.update(client.Info())
-			summary.Uptime = uint64(time.Now().Sub(start) / time.Second)
+			summary.update(client.Info(), uint64(time.Now().Sub(start)/time.Second))
 			services, old, summary.Current = serviceStatus(config, client, director, old)
 			mutex.Unlock()
 			select {
@@ -538,7 +538,6 @@ func netns(socket string, addr netip.Addr) {
 		}
 	}()
 
-	//monitor, err := mon.New(addr, nil, nil, &logger{})
 	monitor, err := mon.New(addr, nil, nil, nil)
 
 	if err != nil {
@@ -633,8 +632,10 @@ func (s *Stats) update(x xvs.Stats) Stats {
 	return *s
 }
 
-func (s *Summary) update(i xvs.Info) Summary {
+func (s *Summary) update(i xvs.Info, t uint64) Summary {
 	o := *s
+
+	s.Uptime = t
 
 	s.Latency = i.Latency
 	s.Dropped = i.Dropped

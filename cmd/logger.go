@@ -56,6 +56,7 @@ type logger struct {
 	history []entry
 	indx    index
 	out     chan string
+	elastic bool
 }
 
 var HOSTNAME string
@@ -117,8 +118,11 @@ func (l *logger) log(lev uint8, f string, a ...any) {
 
 	l.mutex.Lock()
 	if l.out == nil {
-		//l.out = elastic(HOSTNAME)
-		l.out = null()
+		if l.elastic {
+			l.out = elastic(HOSTNAME)
+		} else {
+			l.out = null()
+		}
 		if l.out == nil {
 			log.Fatal("Couldn't start logger")
 		}
